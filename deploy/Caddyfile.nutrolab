@@ -1,0 +1,7 @@
+# Bloco a acrescentar em /srv/clinica/Caddyfile. Aplicado por deploy/deploy-vps.sh.
+
+{$NUTROLAB_HOST} {
+	import security
+	encode zstd gzip
+	reverse_proxy nutrolab:8090
+}

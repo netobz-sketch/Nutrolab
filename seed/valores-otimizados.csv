@@ -1,0 +1,8 @@
+exame_canonico,aliases,sexo,idade_min,idade_max,contexto,unidade,alvo_min,alvo_max,alvo_texto,limite_critico_inferior,limite_critico_superior,orientacao_id,fonte_clinica,versao,data_revisao,status
+vitamina_d_25oh,25-hidroxivitamina D|25(OH)D|Vitamina D 25-OH|Vitamina D,todos,,,geral,ng/mL,40,80,,10,150,ORIENT-VITD-BAIXA,EXEMPLO DE FORMATO - substituir pela decisao do medico,"1.0",2026-10-28,rascunho
+ferritina,Ferritina serica|Ferritina,todos,18,,geral,ng/mL,50,200,,,1000,,EXEMPLO DE FORMATO - substituir pela decisao do medico,"1.0",2026-10-28,rascunho
+ferritina,Ferritina serica|Ferritina,F,18,,pre_menopausa,ng/mL,40,150,,,1000,,EXEMPLO DE FORMATO - regra mais especifica vence,"1.0",2026-10-28,rascunho
+hba1c,Hemoglobina glicada|A1c|HbA1c,todos,,,geral,%,,5.6,,,,,EXEMPLO DE FORMATO - alvo so com limite superior,"1.0",2026-10-28,rascunho
+potassio,Potassio|K+|K,todos,,,geral,mmol/L,3.8,5.0,,2.8,6.0,ORIENT-ALERTA-CRITICO,EXEMPLO DE FORMATO - limites criticos geram alerta prioritario,"1.0",2026-10-28,rascunho
+hbsag,HBsAg|Antigeno de superficie do virus da hepatite B,todos,,,geral,qualitativo,,,nao reagente,,,,EXEMPLO DE FORMATO - exame qualitativo,"1.0",2026-10-28,rascunho
+homa_ir,HOMA-IR|HOMA,todos,,,jejum,adimensional,,2.0,,,,,EXEMPLO DE FORMATO - alvo para calculo derivado,"1.0",2026-10-28,rascunho

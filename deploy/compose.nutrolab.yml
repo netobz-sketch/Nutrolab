@@ -1,0 +1,30 @@
+# Trecho a acrescentar em /srv/clinica/docker-compose.yml (serviço nutrolab) e,
+# no serviço caddy, a variável NUTROLAB_HOST. Aplicado por deploy/deploy-vps.sh.
+  nutrolab:
+    image: nutrolab:local
+    restart: unless-stopped
+    networks: [edge]
+    volumes:
+      - /srv/clinica/nutrolab-data:/data
+    environment:
+      NODE_ENV: production
+      PORT: 8090
+      DATA_DIR: /data
+      ALLOWED_HOSTS: ${NUTROLAB_HOST}
+      SESSION_SECRET: ${NUTROLAB_SESSION_SECRET}
+      ADMIN_EMAIL: ${NUTROLAB_ADMIN_EMAIL:-}
+      ADMIN_NAME: ${NUTROLAB_ADMIN_NAME:-}
+      ADMIN_PASSWORD: ${NUTROLAB_ADMIN_PASSWORD:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${NUTROLAB_ANTHROPIC_MODEL:-claude-opus-5-5}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 384m

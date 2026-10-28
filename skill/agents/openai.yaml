@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analisar Exames de Nutrologia"
+  short_description: "Analisa exames e prepara orientações ao paciente"
+  default_prompt: "Use $analisar-exames-nutrologia para analisar estes exames em PDF e preparar uma minuta de orientações para minha revisão médica."
