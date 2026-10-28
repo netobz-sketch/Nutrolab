@@ -46,6 +46,8 @@ PY
   mkdir -p nutrolab-data
   docker compose config -q
 fi
+# variáveis de shell venceriam o .env na interpolação do compose; a partir daqui só o .env manda
+unset NUTROLAB_ADMIN_EMAIL NUTROLAB_ADMIN_NAME NUTROLAB_ADMIN_PASSWORD
 echo "== build =="
 docker build -q -t nutrolab:local build/nutrolab
 echo "== subir =="
