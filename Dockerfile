@@ -14,8 +14,8 @@ ENV NODE_ENV=production DATA_DIR=/data PORT=8090
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-COPY seed ./seed
-COPY skill ./skill
+COPY --chown=node:node seed ./seed
+COPY --chown=node:node skill ./skill
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8090

@@ -286,13 +286,19 @@ function seedDefaults(database: DatabaseSync): void {
   const rulesCount = num(database.prepare('SELECT COUNT(*) AS n FROM rules').get() as Row, 'n');
   if (rulesCount === 0) {
     const seedPath = path.resolve('seed/valores-otimizados.csv');
-    if (fs.existsSync(seedPath)) {
+    let seedText: string | null = null;
+    try {
+      seedText = fs.existsSync(seedPath) ? fs.readFileSync(seedPath, 'utf8') : null;
+    } catch (error) {
+      console.error(`seed de regras não pôde ser lido (${seedPath}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (seedText !== null) {
       const insert = database.prepare(
         `INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text,
           critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rascunho')`,
       );
-      for (const r of parseCsv(fs.readFileSync(seedPath, 'utf8'))) {
+      for (const r of parseCsv(seedText)) {
         const n = (k: string) => (str(r, k) === '' ? null : Number(str(r, k)));
         insert.run(
           str(r, 'exame_canonico'), str(r, 'aliases'), str(r, 'sexo') || 'todos', n('idade_min'), n('idade_max'),
