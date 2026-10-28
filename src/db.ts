@@ -261,7 +261,7 @@ export function audit(userId: number | null, action: string, entity: string, ent
 
 /* ------------------------------------------------------------------ seed */
 
-function parseCsv(text: string): Row[] {
+export function parseCsv(text: string): Row[] {
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   const header = (lines.shift() ?? '').split(',');
   return lines.map((line) => {
@@ -328,4 +328,20 @@ function seedDefaults(database: DatabaseSync): void {
       1, 'EXEMPLO DE FORMATO - definir canal de contato e critério de urgência',
     );
   }
+}
+
+export const RULE_CSV_COLUMNS = ['exame_canonico', 'aliases', 'sexo', 'idade_min', 'idade_max', 'contexto', 'unidade', 'alvo_min', 'alvo_max', 'alvo_texto', 'limite_critico_inferior', 'limite_critico_superior', 'orientacao_id', 'fonte_clinica', 'versao', 'data_revisao', 'status'] as const;
+
+function csvCell(value: unknown): string {
+  const s = value === null || value === undefined ? '' : String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Exporta as regras no mesmo formato de skill/references/valores-otimizados.csv. */
+export function rulesToCsv(rules: Rule[]): string {
+  const lines = [RULE_CSV_COLUMNS.join(',')];
+  for (const r of rules) {
+    lines.push([r.exam_canonical, r.aliases.join('|'), r.sex, r.age_min, r.age_max, r.contexts.join('|'), r.unit, r.target_min, r.target_max, r.target_text, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status].map(csvCell).join(','));
+  }
+  return lines.join('\n') + '\n';
 }

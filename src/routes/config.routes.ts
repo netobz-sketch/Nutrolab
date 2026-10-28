@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { hashPassword, requireAdmin, requireAuth, userExists } from '../auth.js';
 import { AI_MODEL, aiEnabled } from '../ai.js';
-import { allGuidances, allRules, audit, enabledCalcIds, getDb, num, rowToGuidance, rowToRule, setSetting, str, strOrNull, type Row } from '../db.js';
+import { allGuidances, allRules, audit, enabledCalcIds, getDb, num, parseCsv, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
 import { CALCS, CLASSIFICATIONS, CONTEXTS } from '../engine/index.js';
 import { layout } from '../views/html.js';
 import { auditPage, guidanceFormPage, guidancesPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type UserRow } from '../views/pages.js';
@@ -110,6 +110,48 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'rule', ruleId, { before: current ? rowToRule(current) : null, after: r }, request.id);
     return ok(reply, '/regras', `Regra ${r.exam_canonical} salva (${r.status}).`);
   };
+  app.get('/regras/exportar.csv', async (request, reply) => {
+    audit(request.user?.id ?? null, 'exportar', 'rule', null, { count: allRules().length }, request.id);
+    return reply.header('Content-Disposition', 'attachment; filename="valores-otimizados.csv"').type('text/csv; charset=utf-8').send(rulesToCsv(allRules()));
+  });
+
+  app.post('/regras/importar', async (request, reply) => {
+    const file = await request.file({ limits: { fileSize: 2 * 1024 * 1024 } });
+    if (!file) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Envie um arquivo CSV.'));
+    const text = (await file.toBuffer()).toString('utf8').replace(/^\uFEFF/, '');
+    const header = (text.split(/\r?\n/)[0] ?? '').trim();
+    if (header !== RULE_CSV_COLUMNS.join(',')) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
+    const known = new Set(allGuidances().map((g) => g.code));
+    const insert = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    let imported = 0;
+    const errors: string[] = [];
+    parseCsv(text).forEach((row, i) => {
+      const line = i + 2;
+      const parsed = RuleBody.safeParse({
+        exam_canonical: str(row, 'exame_canonico'), aliases: str(row, 'aliases').split('|').join(' | '), sex: str(row, 'sexo') || 'todos',
+        age_min: str(row, 'idade_min'), age_max: str(row, 'idade_max'), contexts: str(row, 'contexto').split('|').map((c) => c.trim()).filter((c) => c && c !== 'geral'),
+        unit: str(row, 'unidade'), target_min: str(row, 'alvo_min'), target_max: str(row, 'alvo_max'), target_text: str(row, 'alvo_texto'),
+        critical_low: str(row, 'limite_critico_inferior'), critical_high: str(row, 'limite_critico_superior'), guidance_ids: str(row, 'orientacao_id').split('|').map((c) => c.trim()).filter(Boolean),
+        clinical_source: str(row, 'fonte_clinica'), version: str(row, 'versao') || '1.0', reviewed_at: str(row, 'data_revisao'), status: str(row, 'status') || 'rascunho',
+      });
+      if (!parsed.success) {
+        errors.push(`linha ${line}: ${firstIssue(parsed.error)}`);
+        return;
+      }
+      const r = parsed.data;
+      const unknown = r.guidance_ids.filter((g) => !known.has(g));
+      if (unknown.length) {
+        errors.push(`linha ${line}: orientação inexistente ${unknown.join(', ')}`);
+        return;
+      }
+      insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, request.user?.id ?? null);
+      imported += 1;
+    });
+    audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
+    const msg = `${imported} regra(s) importada(s).${errors.length ? ` ${errors.length} rejeitada(s): ${errors.slice(0, 5).join(' · ')}` : ''}`;
+    return reply.redirect(`/regras?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);
+  });
+
   app.post('/regras', async (request, reply) => saveRule(request, reply, null));
   app.post('/regras/:id', async (request, reply) => saveRule(request, reply, Number((request.params as { id: string }).id)));
   app.post('/regras/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {

@@ -186,6 +186,17 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return redirectMsg(reply, `/casos/${id}`, 'Caso atualizado.');
   });
 
+  app.post('/casos/:id/status', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const c = loadCase(id);
+    if (!c) return reply.code(404).send('Caso não encontrado');
+    const status = (request.body as { status?: string } | null)?.status;
+    if (status !== 'aberto' && status !== 'revisado' && status !== 'arquivado') return redirectMsg(reply, `/casos/${id}`, 'Status inválido.', 'err');
+    getDb().prepare("UPDATE cases SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
+    audit(request.user?.id ?? null, 'status', 'case', id, { before: c.status, after: status }, request.id);
+    return redirectMsg(reply, `/casos/${id}`, `Caso marcado como ${status}.`);
+  });
+
   app.post('/casos/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const c = loadCase(id);
