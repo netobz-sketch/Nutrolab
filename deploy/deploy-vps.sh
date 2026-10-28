@@ -10,7 +10,7 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 echo "== enviando código =="
 rsync -a --delete --exclude node_modules --exclude dist --exclude data --exclude .env --exclude .git "$SRC/" "$HOST_SSH:$STACK/build/nutrolab/"
 
-ssh "$HOST_SSH" bash -s <<'REMOTE'
+ssh "$HOST_SSH" "NUTROLAB_ADMIN_EMAIL='${NUTROLAB_ADMIN_EMAIL:-}' NUTROLAB_ADMIN_NAME='${NUTROLAB_ADMIN_NAME:-Administrador}' NUTROLAB_ADMIN_PASSWORD='${NUTROLAB_ADMIN_PASSWORD:-}' bash -s" <<'REMOTE'
 set -euo pipefail
 cd /srv/clinica
 if ! grep -q '^NUTROLAB_HOST=' .env; then
