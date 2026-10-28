@@ -16,10 +16,12 @@ cd /srv/clinica
 if ! grep -q '^NUTROLAB_HOST=' .env; then
   echo "== primeira instalação: .env, compose, Caddyfile =="
   IP=$(curl -s4 ifconfig.me || hostname -I | awk '{print $1}')
+  FQDN=$(hostname -f 2>/dev/null || true)
   {
     echo ""
     echo "# --- NutroLab --------------------------------------------------------------"
-    echo "NUTROLAB_HOST=nutrolab.${IP//./-}.sslip.io"
+    # VPS Hostinger publica *.srvNNN.hstgr.cloud -> IP da VPS; senão, sslip.io
+    if [[ "$FQDN" == *.hstgr.cloud ]]; then echo "NUTROLAB_HOST=nutrolab.$FQDN"; else echo "NUTROLAB_HOST=nutrolab.${IP//./-}.sslip.io"; fi
     echo "NUTROLAB_SESSION_SECRET=$(openssl rand -hex 32)"
     echo "NUTROLAB_ADMIN_EMAIL=${NUTROLAB_ADMIN_EMAIL:-}"
     echo "NUTROLAB_ADMIN_NAME=${NUTROLAB_ADMIN_NAME:-Administrador}"

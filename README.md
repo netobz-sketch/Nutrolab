@@ -52,7 +52,8 @@ NUTROLAB_ADMIN_EMAIL=voce@exemplo.com NUTROLAB_ADMIN_PASSWORD='senha-forte' ./de
 ```
 
 Primeira execução acrescenta o serviço ao `docker-compose.yml`, o host ao `Caddyfile`
-e as variáveis ao `.env` da VPS; as seguintes só reconstroem a imagem. Para ligar a IA,
+e as variáveis ao `.env` da VPS (host padrão `nutrolab.<vps>.hstgr.cloud`, nome que a Hostinger já
+aponta para a VPS; para um domínio próprio, troque `NUTROLAB_HOST` e recrie o Caddy); as seguintes só reconstroem a imagem. Para ligar a IA,
 preencha `ANTHROPIC_API_KEY` no `.env` da VPS e `docker compose up -d nutrolab`.
 
 Backup: `npm run backup` dentro do contêiner (cron diário configurado no deploy),
