@@ -15,6 +15,7 @@ db.close();
 const check = new DatabaseSync(dest, { readOnly: true });
 const row = check.prepare('PRAGMA integrity_check').get() as { integrity_check?: string } | undefined;
 check.close();
+for (const side of ['-wal', '-shm']) fs.rmSync(dest + side, { force: true });
 if (row?.integrity_check !== 'ok') {
   fs.rmSync(dest, { force: true });
   throw new Error(`backup falhou na verificação de integridade: ${row?.integrity_check}`);
@@ -22,6 +23,6 @@ if (row?.integrity_check !== 'ok') {
 const cutoff = Date.now() - 14 * 24 * 3600 * 1000;
 for (const f of fs.readdirSync(dir)) {
   const p = path.join(dir, f);
-  if (f.startsWith('nutrolab-') && fs.statSync(p).mtimeMs < cutoff) fs.rmSync(p);
+  if (f.startsWith('nutrolab-') && (f.endsWith('-wal') || f.endsWith('-shm') || fs.statSync(p).mtimeMs < cutoff)) fs.rmSync(p);
 }
 console.log(`backup ok: ${dest}`);
