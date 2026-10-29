@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { hashPassword, requireAdmin, requireAuth, userExists } from '../auth.js';
+import { createResetToken, hashPassword, requireAdmin, requireAuth, userExists } from '../auth.js';
+import { appUrl, mailEnabled } from '../mail.js';
 import { AI_MODEL, aiEnabled } from '../ai.js';
 import { allGuidances, allRules, audit, enabledCalcIds, getDb, num, parseCsv, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
 import { CALCS, CLASSIFICATIONS, CONTEXTS } from '../engine/index.js';
@@ -207,7 +208,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = getDb().prepare('SELECT COUNT(*) AS calls, IFNULL(SUM(input_tokens),0) AS i, IFNULL(SUM(output_tokens),0) AS o FROM ai_usage').get() as Row;
     return { calls: num(row, 'calls'), input: num(row, 'i'), output: num(row, 'o') };
   };
-  const settings = (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => page(request, reply, 'Configurações', settingsPage({ enabled: enabledCalcIds(), users: loadUsers(), aiOn: aiEnabled(), aiModel: AI_MODEL, error, usage: usage() }));
+  const settings = (request: FastifyRequest, reply: FastifyReply, error: string | null = null, resetLink: { email: string; link: string; expiresAt: string } | null = null) => page(request, reply, 'Configurações', settingsPage({ enabled: enabledCalcIds(), users: loadUsers(), aiOn: aiEnabled(), aiModel: AI_MODEL, error, usage: usage(), mailOn: mailEnabled(), resetLink }));
 
   app.get('/configuracoes', { preHandler: requireAdmin }, async (request, reply) => settings(request, reply));
   app.post('/configuracoes/calculos', { preHandler: requireAdmin }, async (request, reply) => {
@@ -226,6 +227,16 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     audit(request.user?.id ?? null, 'criar', 'user', Number(info.lastInsertRowid), { email: u.email, role: u.role }, request.id);
     return ok(reply, '/configuracoes', `Usuário ${u.email} criado.`);
   });
+  app.post('/configuracoes/usuarios/:id/redefinir', { preHandler: requireAdmin }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getDb().prepare('SELECT email FROM users WHERE id = ? AND disabled_at IS NULL').get(id) as Row | undefined;
+    if (!row) return settings(request, reply, 'usuário não encontrado ou desativado');
+    const { token, expiresAt } = createResetToken(id, 'admin', request.user?.id ?? null);
+    audit(request.user?.id ?? null, 'gerar_link_redefinicao', 'user', id, { expiresAt }, request.id);
+    const base = appUrl() || `${request.protocol}://${request.hostname}`;
+    return settings(request, reply, null, { email: str(row, 'email'), link: `${base}/redefinir/${token}`, expiresAt });
+  });
+
   app.post('/configuracoes/usuarios/:id/desativar', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     if (id === request.user?.id) return settings(request, reply, 'não é possível desativar a si mesmo');

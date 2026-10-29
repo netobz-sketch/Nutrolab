@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   output_tokens INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_by INTEGER,
+  channel TEXT NOT NULL DEFAULT 'admin',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_results_case ON results(case_id);
 CREATE INDEX IF NOT EXISTS idx_analyses_case ON analyses(case_id);
 CREATE INDEX IF NOT EXISTS idx_rules_exam ON rules(exam_canonical, status);

@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
-import { bootstrapAdmin, COOKIE_NAME, findUserById, readSessionToken } from './auth.js';
+import { bootstrapAdmin, COOKIE_NAME, sessionUser } from './auth.js';
 import { aiEnabled, AI_MODEL } from './ai.js';
 import { openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
@@ -44,8 +44,7 @@ app.addHook('onRequest', async (request, reply) => {
       return reply.code(403).send('origem inválida');
     }
   }
-  const userId = readSessionToken(request.cookies[COOKIE_NAME]);
-  request.user = userId ? findUserById(userId) : null;
+  request.user = sessionUser(request.cookies[COOKIE_NAME]);
   reply.header('Cache-Control', 'no-store');
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');

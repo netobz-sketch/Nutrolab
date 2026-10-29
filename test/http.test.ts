@@ -122,6 +122,46 @@ test('vincular exame sem correspondência à tabela e versão para impressão', 
   assert.doesNotMatch(print.body, /class="sidenav"/);
 });
 
+test('recuperação de senha: link do administrador, uso único, sessões antigas caem', async () => {
+  const noMail = await get('/esqueci');
+  assert.equal(noMail.statusCode, 200);
+  assert.match(noMail.body, /link de redefinição/);
+  assert.equal((await get('/redefinir/token-invalido-xxxxxxxxxxxx')).statusCode, 404);
+  const create = await post('/configuracoes/usuarios', { name: 'Nutri', email: 'nutri@teste.local', password: 'senha-inicial-1', role: 'medico' });
+  assert.equal(create.statusCode, 302);
+  const users = await get('/configuracoes');
+  const idMatch = /usuarios\/(\d+)\/redefinir/.exec(users.body.split('nutri@teste.local')[1] ?? '') ?? /usuarios\/(\d+)\/redefinir/.exec(users.body);
+  const nutriId = Number(idMatch?.[1]);
+  assert.ok(nutriId > 1);
+  const gen = await post(`/configuracoes/usuarios/${nutriId}/redefinir`, {});
+  assert.equal(gen.statusCode, 200);
+  const link = /\/redefinir\/([A-Za-z0-9_-]+)/.exec(gen.body)?.[1];
+  assert.ok(link, 'link gerado');
+  const adminCookie = cookie;
+  cookie = '';
+  const form = await get(`/redefinir/${link}`);
+  assert.equal(form.statusCode, 200);
+  const weak = await post(`/redefinir/${link}`, { password: 'curta', confirm: 'curta' });
+  assert.match(weak.body, /ao menos 10 caracteres/);
+  const ok = await post(`/redefinir/${link}`, { password: 'nova-senha-forte-1', confirm: 'nova-senha-forte-1' });
+  assert.equal(ok.statusCode, 302);
+  assert.equal((await post(`/redefinir/${link}`, { password: 'outra-senha-forte-1', confirm: 'outra-senha-forte-1' })).statusCode, 404);
+  const old = await post('/login', { email: 'nutri@teste.local', password: 'senha-inicial-1' });
+  assert.equal(old.statusCode, 401);
+  const fresh = await post('/login', { email: 'nutri@teste.local', password: 'nova-senha-forte-1' });
+  assert.equal(fresh.statusCode, 302);
+  cookie = adminCookie;
+  const beforeChange = await get('/casos');
+  assert.equal(beforeChange.statusCode, 200);
+  const change = await post('/senha', { current: 'senha-de-teste-123', password: 'senha-admin-nova-1', confirm: 'senha-admin-nova-1' });
+  assert.match(change.body, /Senha alterada/);
+  const stale = await app.inject({ method: 'GET', url: '/casos', headers: { ...H, cookie: adminCookie } });
+  assert.equal(stale.statusCode, 302, 'sessão antiga invalidada após troca de senha');
+  const setNew = change.headers['set-cookie'];
+  cookie = ((Array.isArray(setNew) ? setNew[0] : setNew) ?? '').split(';')[0] ?? '';
+  assert.equal((await get('/casos')).statusCode, 200);
+});
+
 test('status do caso e exportação CSV', async () => {
   const st = await post('/casos/1/status', { status: 'revisado' });
   assert.equal(st.statusCode, 302);

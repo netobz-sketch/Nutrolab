@@ -7,6 +7,12 @@ export interface SessionUser {
   email: string;
   name: string;
   role: 'admin' | 'medico';
+  /** versão da senha: muda quando a senha muda, invalidando sessões antigas */
+  pwv: string;
+}
+
+export function passwordVersion(passwordHash: string): string {
+  return crypto.createHash('sha256').update(passwordHash).digest('hex').slice(0, 12);
 }
 
 declare module 'fastify' {
@@ -42,29 +48,77 @@ function sign(payload: string): string {
   return crypto.createHmac('sha256', secret).update(payload).digest('base64url');
 }
 
-export function createSessionToken(userId: number): string {
-  const payload = Buffer.from(JSON.stringify({ u: userId, e: Date.now() + SESSION_HOURS * 3600 * 1000 })).toString('base64url');
+export function createSessionToken(user: SessionUser): string {
+  const payload = Buffer.from(JSON.stringify({ u: user.id, v: user.pwv, e: Date.now() + SESSION_HOURS * 3600 * 1000 })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
-export function readSessionToken(token: string | undefined): number | null {
+export function readSessionToken(token: string | undefined): { userId: number; pwv: string } | null {
   if (!token) return null;
   const [payload, sig] = token.split('.');
   if (!payload || !sig) return null;
   const expected = sign(payload);
   if (expected.length !== sig.length || !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) return null;
   try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { u?: number; e?: number };
-    if (!data.u || !data.e || data.e < Date.now()) return null;
-    return data.u;
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { u?: number; v?: string; e?: number };
+    if (!data.u || !data.e || !data.v || data.e < Date.now()) return null;
+    return { userId: data.u, pwv: data.v };
   } catch {
     return null;
   }
 }
 
+function rowToUser(row: Row): SessionUser {
+  return { id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'], pwv: passwordVersion(str(row, 'password_hash')) };
+}
+
 export function findUserById(id: number): SessionUser | null {
-  const row = getDb().prepare('SELECT id, email, name, role FROM users WHERE id = ? AND disabled_at IS NULL').get(id) as Row | undefined;
-  return row ? { id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'] } : null;
+  const row = getDb().prepare('SELECT id, email, name, role, password_hash FROM users WHERE id = ? AND disabled_at IS NULL').get(id) as Row | undefined;
+  return row ? rowToUser(row) : null;
+}
+
+/** Usuário da sessão: só vale se a versão da senha ainda for a mesma. */
+export function sessionUser(token: string | undefined): SessionUser | null {
+  const session = readSessionToken(token);
+  if (!session) return null;
+  const user = findUserById(session.userId);
+  return user && user.pwv === session.pwv ? user : null;
+}
+
+export function findUserByEmail(email: string): SessionUser | null {
+  const row = getDb().prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ? AND disabled_at IS NULL').get(email.trim().toLowerCase()) as Row | undefined;
+  return row ? rowToUser(row) : null;
+}
+
+export function setPassword(userId: number, password: string): void {
+  getDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+}
+
+/* ------------------------------------------------- redefinição de senha */
+const RESET_HOURS = { admin: 24, email: 1, cli: 24 } as const;
+export type ResetChannel = keyof typeof RESET_HOURS;
+
+function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+/** Cria token de uso único; devolve o token em claro (só aparece uma vez). */
+export function createResetToken(userId: number, channel: ResetChannel, createdBy: number | null): { token: string; expiresAt: string } {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = new Date(Date.now() + RESET_HOURS[channel] * 3600 * 1000).toISOString();
+  getDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
+  getDb().prepare('INSERT INTO password_resets(user_id, token_hash, expires_at, created_by, channel) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), expiresAt, createdBy, channel);
+  return { token, expiresAt };
+}
+
+export function findValidReset(token: string): { id: number; userId: number } | null {
+  if (!token || token.length < 20) return null;
+  const row = getDb().prepare("SELECT id, user_id FROM password_resets WHERE token_hash = ? AND used_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')").get(hashToken(token)) as Row | undefined;
+  return row ? { id: num(row, 'id'), userId: num(row, 'user_id') } : null;
+}
+
+export function consumeReset(id: number): void {
+  getDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE id = ?").run(id);
 }
 
 export function authenticate(email: string, password: string): SessionUser | null {
@@ -75,7 +129,7 @@ export function authenticate(email: string, password: string): SessionUser | nul
     return null;
   }
   if (!verifyPassword(password, str(row, 'password_hash'))) return null;
-  return { id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'] };
+  return rowToUser(row);
 }
 
 /** Cria o primeiro administrador a partir do ambiente quando não há usuários. */
@@ -105,18 +159,24 @@ export function lastLoginAt(userId: number): string | null {
 
 /* ------------------------------------------------------------ rate limit */
 const attempts = new Map<string, { count: number; resetAt: number }>();
-export function loginAllowed(ip: string): boolean {
+function allow(key: string, max: number): boolean {
   const now = Date.now();
-  const entry = attempts.get(ip);
+  const entry = attempts.get(key);
   if (!entry || entry.resetAt < now) {
-    attempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+    attempts.set(key, { count: 1, resetAt: now + 15 * 60 * 1000 });
     return true;
   }
   entry.count += 1;
-  return entry.count <= 10;
+  return entry.count <= max;
+}
+export function loginAllowed(ip: string): boolean {
+  return allow(`login:${ip}`, 10);
+}
+export function resetAllowed(ip: string): boolean {
+  return allow(`reset:${ip}`, 5);
 }
 export function loginSucceeded(ip: string): void {
-  attempts.delete(ip);
+  attempts.delete(`login:${ip}`);
 }
 
 /* --------------------------------------------------------------- guards */

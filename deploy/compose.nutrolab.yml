@@ -18,6 +18,13 @@
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${NUTROLAB_ANTHROPIC_MODEL:-claude-opus-5-5}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      APP_URL: https://${NUTROLAB_HOST}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_ADMIN_EMAIL:-}
+      SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-NutroLab}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

@@ -30,7 +30,19 @@ export function loginPage(error: string | null, next: string): string {
 <label>E-mail</label><input name="email" type="email" autocomplete="username" required autofocus>
 <label>Senha</label><input name="password" type="password" autocomplete="current-password" required>
 <p><button class="btn" type="submit" style="width:100%">Entrar</button></p></form>
+<p style="text-align:center;margin:0 0 10px"><a href="/esqueci" class="small">Esqueci a senha</a></p>
 <p class="muted small" style="text-align:center;margin:0">Apoio à decisão clínica. Acesso restrito à equipe médica.</p></div>`;
+}
+
+export function forgotPage(message: string | null, mailOn: boolean, done = false): string {
+  const body = mailOn
+    ? `<form method="post" action="/esqueci"><label>E-mail cadastrado</label><input name="email" type="email" required autofocus><p><button class="btn" type="submit" style="width:100%">Enviar link de redefinição</button></p></form>`
+    : `<p>O envio de e-mail ainda não está configurado neste servidor. Peça ao administrador um <b>link de redefinição</b> (ele gera em Configurações → Usuários e envia para você por mensagem).</p>`;
+  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a><h1 style="text-align:center;font-size:20px">Esqueci a senha</h1>${message ? `<div class="flash ${done ? 'ok' : 'err'}">${h(message)}</div>` : ''}${done ? '' : body}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
+}
+
+export function resetPage(token: string, error: string | null, dead: boolean): string {
+  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a><h1 style="text-align:center;font-size:20px">Definir nova senha</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}${dead ? '' : `<form method="post" action="/redefinir/${attr(token)}"><label>Nova senha (mín. 10 caracteres)</label><input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus><label>Confirmar nova senha</label><input name="confirm" type="password" autocomplete="new-password" required><p><button class="btn" type="submit" style="width:100%">Salvar e entrar</button></p></form>`}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
 }
 
 export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean): string {
@@ -212,14 +224,15 @@ export function guidanceFormPage(g: Guidance | null, error: string | null): stri
 
 export interface UserRow { id: number; email: string; name: string; role: string; created_at: string; disabled_at: string | null }
 
-export function settingsPage(opts: { enabled: Set<string>; users: UserRow[]; aiOn: boolean; aiModel: string; error: string | null; usage: { calls: number; input: number; output: number } }): string {
+export function settingsPage(opts: { enabled: Set<string>; users: UserRow[]; aiOn: boolean; aiModel: string; error: string | null; usage: { calls: number; input: number; output: number }; mailOn: boolean; resetLink: { email: string; link: string; expiresAt: string } | null }): string {
   const calcRows = CALCS.map((c) => `<tr><td><label style="display:inline;font-weight:500"><input type="checkbox" name="calc" value="${c.id}"${opts.enabled.has(c.id) ? ' checked' : ''} style="width:auto"> ${h(c.name)}</label></td><td><code>${h(c.formula)}</code></td><td>${h(c.inputs.map((i) => `${i.exam} (${i.unit})`).join(', '))}</td></tr>`).join('');
-  const userRows = opts.users.map((u) => `<tr><td>${h(u.name)}</td><td>${h(u.email)}</td><td>${h(u.role)}</td><td>${u.disabled_at ? 'desativado' : 'ativo'}</td><td class="actions"><form method="post" action="/configuracoes/usuarios/${u.id}/${u.disabled_at ? 'ativar' : 'desativar'}" class="inline"><button class="btn sec sm" type="submit">${u.disabled_at ? 'Reativar' : 'Desativar'}</button></form></td></tr>`).join('');
+  const userRows = opts.users.map((u) => `<tr><td>${h(u.name)}</td><td>${h(u.email)}</td><td>${h(u.role)}</td><td>${u.disabled_at ? 'desativado' : 'ativo'}</td><td class="actions">${u.disabled_at ? '' : `<form method="post" action="/configuracoes/usuarios/${u.id}/redefinir" class="inline"><button class="btn sec sm" type="submit">Link de redefinição</button></form>`}<form method="post" action="/configuracoes/usuarios/${u.id}/${u.disabled_at ? 'ativar' : 'desativar'}" class="inline"><button class="btn sec sm" type="submit">${u.disabled_at ? 'Reativar' : 'Desativar'}</button></form></td></tr>`).join('');
   return `<div class="pagehead"><div><div class="crumbs">Administração</div><h1>Configurações</h1></div></div>${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
 <div class="card"><h2 style="margin-top:0">IA</h2><p>${opts.aiOn ? `Ligada · modelo <code>${h(opts.aiModel)}</code>. Uso acumulado: ${opts.usage.calls} chamadas, ${opts.usage.input.toLocaleString('pt-BR')} tokens de entrada, ${opts.usage.output.toLocaleString('pt-BR')} de saída.` : 'Desligada. Defina <code>ANTHROPIC_API_KEY</code> no ambiente do servidor para habilitar leitura de PDF e redação.'}</p><p class="muted small">A IA só extrai texto do PDF e redige; nunca classifica nem decide. A classificação é sempre do motor de regras.</p></div>
 <form method="post" action="/configuracoes/calculos" class="card"><h2 style="margin-top:0">Cálculos derivados habilitados</h2><table><thead><tr><th>Índice</th><th>Fórmula</th><th>Insumos</th></tr></thead><tbody>${calcRows}</tbody></table><p><button class="btn" type="submit">Salvar</button></p></form>
-<div class="card"><h2 style="margin-top:0">Usuários</h2><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Situação</th><th></th></tr></thead><tbody>${userRows}</tbody></table>
-<h3>Novo usuário</h3><form method="post" action="/configuracoes/usuarios"><div class="grid"><div><label>Nome</label><input name="name" required></div><div><label>E-mail</label><input name="email" type="email" required></div><div><label>Senha (mín. 10)</label><input name="password" type="password" minlength="10" required></div><div><label>Papel</label><select name="role">${option('medico', 'médico', 'medico')}${option('admin', 'administrador', 'medico')}</select></div></div><p><button class="btn" type="submit">Criar</button></p></form></div>`;
+${opts.resetLink ? `<div class="flash ok">Link de redefinição para <b>${h(opts.resetLink.email)}</b>, válido até ${fmtDate(opts.resetLink.expiresAt)} (UTC), uso único. Copie e envie por um canal seguro; ele não será mostrado de novo.<br><code style="word-break:break-all;user-select:all">${h(opts.resetLink.link)}</code></div>` : ''}
+<div class="card"><h2 style="margin-top:0">Usuários</h2><p class="muted small">Recuperação de senha: ${opts.mailOn ? 'e-mail configurado; a tela "Esqueci a senha" envia o link sozinha.' : 'sem e-mail configurado (SMTP); gere o link aqui e envie ao usuário. Se o próprio administrador se trancar, use <code>node dist/scripts/reset-password.js e-mail</code> na VPS.'}</p><div class="tablewrap"><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Situação</th><th></th></tr></thead><tbody>${userRows}</tbody></table>
+</div><h3>Novo usuário</h3><form method="post" action="/configuracoes/usuarios"><div class="grid"><div><label>Nome</label><input name="name" required></div><div><label>E-mail</label><input name="email" type="email" required></div><div><label>Senha (mín. 10)</label><input name="password" type="password" minlength="10" required></div><div><label>Papel</label><select name="role">${option('medico', 'médico', 'medico')}${option('admin', 'administrador', 'medico')}</select></div></div><p><button class="btn" type="submit">Criar</button></p></form></div>`;
 }
 
 export interface AuditRow { id: number; created_at: string; user: string; action: string; entity: string; entity_id: string | null; details: string | null }
