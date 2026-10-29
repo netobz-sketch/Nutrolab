@@ -4,7 +4,9 @@
   "private": true,
   "description": "Análise de exames de nutrologia: regras do médico + leitura de PDF por IA, sempre como minuta para revisão médica.",
   "type": "module",
-  "engines": { "node": ">=22.13.0" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "tsc --watch & node --watch --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/src/server.js",
     "build": "tsc -p tsconfig.json",
@@ -19,7 +21,7 @@
     "@fastify/formbody": "^8.0.2",
     "@fastify/multipart": "^9.0.3",
     "fastify": "^5.3.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
