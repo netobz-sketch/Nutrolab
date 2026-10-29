@@ -156,7 +156,7 @@ export type Conduct = z.infer<typeof ConductSchema>;
 const CONDUCT_SYSTEM = `Você é assistente de um médico nutrólogo. A partir de exames já classificados, do pré-questionário e da biblioteca de orientações do próprio médico, proponha uma lista de SUGESTÕES de conduta para ele revisar, aprovar, editar ou rejeitar. Nada do que você escrever chega ao paciente sem a aprovação explícita do médico.
 
 Como trabalhar:
-1. Primeiro use a ferramenta de busca (restrita ao OpenEvidence) para 2 a 5 consultas objetivas sobre os pontos críticos do caso (ex.: "vitamin D deficiency supplementation adults", "hyperferritinemia evaluation"). Registre em "pesquisa_openevidence" o que encontrou e o que não encontrou; em cada item, "fontes" lista as URLs usadas (vazio se nenhuma).
+1. Primeiro use a ferramenta de busca na web para 2 a 5 consultas objetivas sobre os pontos críticos do caso (ex.: "vitamin D deficiency supplementation adults guideline", "hyperferritinemia evaluation"). Prefira diretrizes de sociedades, PubMed/PMC e revisões recentes. Registre em "pesquisa_openevidence" um resumo do que encontrou e do que não encontrou; em cada item, "fontes" lista as URLs usadas (vazio se nenhuma). O médico fará a consulta complementar no OpenEvidence por um botão do sistema; não tente acessar o OpenEvidence.
 2. Baseie as sugestões em nutrologia e medicina baseada em evidências, priorizando a biblioteca do médico quando ela cobrir o achado (cite o código da orientação na justificativa).
 3. Cada item: tipo (suplementacao, estilo_de_vida, seguimento, exame, encaminhamento, medicamentoso, outro), título curto, justificativa com o exame e o valor que a motiva, exames relacionados (ids canônicos), fontes. Para suplementação e medicamento, descreva a opção e a faixa usual citada pela fonte, deixando claro que dose e duração são decisão do médico. Para seguimento, proponha o intervalo de repetição (ex.: 3 ou 6 meses) com a razão.
 4. Não repita a mesma sugestão para exames dentro do alvo. Não invente achados. Se os dados forem insuficientes, diga em "pesquisa_openevidence" e proponha apenas o que se sustenta.
@@ -170,13 +170,13 @@ export async function suggestConduct(payload: unknown, caseId: number): Promise<
       model: AI_MODEL,
       max_tokens: 10000,
       system: [{ type: 'text', text: CONDUCT_SYSTEM, cache_control: { type: 'ephemeral' } }],
-      tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5, allowed_domains: ['openevidence.com'] }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
       messages: [{ role: 'user', content: `Dados do caso (JSON):\n${JSON.stringify(payload, null, 1)}` }],
       output_config: { effort: 'high' },
     });
     recordUsage(caseId, 'conduta', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir conduta para este caso.');
-    const searches = response.content.filter((b) => b.type === 'server_tool_use').length;
+    const searches = response.content.filter((b) => b.type === 'server_tool_use' && b.name === 'web_search').length;
     const text = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n').trim();
     const json = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     const start = json.indexOf('{');

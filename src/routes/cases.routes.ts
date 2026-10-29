@@ -557,7 +557,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       }
       getDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`conduct.search.${aid}`, conduct.pesquisa_openevidence.slice(0, 4000));
       audit(request.user?.id ?? null, 'sugerir_conduta_ia', 'analysis', Number(aid), { items: conduct.itens.length, searches }, request.id);
-      return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`${conduct.itens.length} sugestão(ões) geradas com ${searches} consulta(s) ao OpenEvidence. Revise cada uma.`)}`);
+      return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`${conduct.itens.length} sugestão(ões) geradas com ${searches} consulta(s) à literatura. Revise cada uma e use o botão do OpenEvidence para aprofundar.`)}`);
     } catch (error) {
       request.log.error({ err: error }, 'falha na sugestão de conduta');
       return conductView(request, reply, error instanceof AiError ? error.message : 'Falha inesperada ao sugerir conduta.');
