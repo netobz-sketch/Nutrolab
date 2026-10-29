@@ -2,6 +2,7 @@ import { CALCS, CLASSIFICATIONS, CLASSIFICATION_LABEL, COMPLAINTS, CONTEXTS, for
 import type { Score } from '../engine/index.js';
 import type { SessionUser } from '../auth.js';
 import { formatCpf } from '../cpf.js';
+import type { Formula } from '../db.js';
 import type { Evaluation, Guidance, Rule } from '../engine/index.js';
 import { attr, fmtDate, h, icon, option, statusTag } from './html.js';
 
@@ -240,7 +241,7 @@ export function analysisPage(opts: { c: CaseRow; analysis: AnalysisRow; patientH
   const sys = score?.bySystem.map((s) => `<div class="row"><div><div style="font-weight:600">${h(s.label)}</div><div class="muted small">${s.n} exame(s)</div></div><div class="actions"><div style="width:140px;height:8px;border-radius:999px;background:var(--neutral-soft);overflow:hidden"><div style="width:${s.score}%;height:100%;background:${s.score >= 80 ? 'var(--ok)' : s.score >= 60 ? 'var(--warn)' : 'var(--danger)'}"></div></div><span class="num" style="font-weight:700;min-width:36px;text-align:right">${s.score}</span></div></div>`).join('') ?? '';
   const finalized = !!a.finalized_at;
   return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / <a href="/casos/${c.id}">${h(c.patient_code)}</a> / análise</div><h1>Análise #${a.id} ${finalized ? '<span class="tag revisado">final</span>' : '<span class="tag aberto">minuta</span>'}</h1><div class="sub">Etapa 4 de 5 · ${fmtDate(a.created_at)} · tabela ${h(a.table_version)} · ${a.ai_used ? `redação ${h(a.ai_model ?? 'IA')}` : 'sem redação automática'}</div></div>
-<div class="actions"><a class="btn sec" href="/casos/${c.id}">Voltar ao caso</a><a class="btn sec" href="${openEvidenceUrl(opts.criticalQuery)}" target="_blank" rel="noopener">Pesquisar no OpenEvidence</a><a class="btn ${finalized ? 'sec' : ''}" href="/casos/${c.id}/analises/${a.id}/conduta">${finalized ? 'Ver conduta' : `Etapa 5: conduta${opts.conductCount ? ` (${opts.conductCount})` : ''}`}</a></div></div>
+<div class="actions"><a class="btn sec" href="/casos/${c.id}">Voltar ao caso</a><a class="btn sec" href="${openEvidenceUrl(opts.criticalQuery)}" target="_blank" rel="noopener">Pesquisar no OpenEvidence</a><a class="btn sec" href="/casos/${c.id}/analises/${a.id}/formulas">Fórmulas e medicamentos</a><a class="btn ${finalized ? 'sec' : ''}" href="/casos/${c.id}/analises/${a.id}/conduta">${finalized ? 'Ver conduta' : `Etapa 5: conduta${opts.conductCount ? ` (${opts.conductCount})` : ''}`}</a></div></div>
 
 <div class="two" style="margin-bottom:16px">
 <div class="card" style="display:flex;gap:18px;align-items:center;flex-wrap:wrap"><div>${gaugeSvg(score?.total ?? null, 200)}</div><div style="flex:1 1 200px"><div class="k muted small">Score de saúde laboratorial</div><div style="font-size:22px;font-weight:700">${band ? h(band.label) : 'Sem score'}</div><div class="muted small">${score ? `${score.counted} resultado(s) comparáveis com regras ativas. 100 = tudo no alvo ótimo.` : 'Nenhum resultado comparável.'}</div></div></div>
@@ -264,7 +265,7 @@ ${i.sources.length ? `<div class="muted small" style="margin-top:6px">Fontes: ${
   const approved = items.filter((i) => i.status === 'aprovada').length;
   const pending = items.filter((i) => i.status === 'sugerida').length;
   return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / <a href="/casos/${c.id}">${h(c.patient_code)}</a> / <a href="/casos/${c.id}/analises/${a.id}">análise #${a.id}</a> / conduta</div><h1>Conduta e orientações ${finalized ? '<span class="tag revisado">final</span>' : ''}</h1><div class="sub">Etapa 5 de 5. A IA sugere; só o que você aprovar entra no relatório final. ${approved} aprovada(s), ${pending} pendente(s).</div></div>
-<div class="actions"><a class="btn sec" href="/casos/${c.id}/analises/${a.id}">Voltar à análise</a><a class="btn sec" href="${openEvidenceUrl(opts.criticalQuery)}" target="_blank" rel="noopener">Pesquisar no OpenEvidence</a>${finalized || !opts.aiOn ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/sugerir" class="inline"><button class="btn soft" type="submit" onclick="this.disabled=true;this.textContent='Pesquisando e redigindo...';this.form.submit()">Sugerir conduta com IA</button></form>`}</div></div>
+<div class="actions"><a class="btn sec" href="/casos/${c.id}/analises/${a.id}">Voltar à análise</a><a class="btn sec" href="/casos/${c.id}/analises/${a.id}/formulas">Fórmulas e medicamentos</a><a class="btn sec" href="${openEvidenceUrl(opts.criticalQuery)}" target="_blank" rel="noopener">Pesquisar no OpenEvidence</a>${finalized || !opts.aiOn ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/sugerir" class="inline"><button class="btn soft" type="submit" onclick="this.disabled=true;this.textContent='Pesquisando e redigindo...';this.form.submit()">Sugerir conduta com IA</button></form>`}</div></div>
 ${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
 ${opts.searchNote ? `<div class="card"><h2 style="margin-top:0">Pesquisa na literatura (resumo da IA)</h2><p class="muted small">A IA pesquisa em PubMed, diretrizes e fontes abertas. O OpenEvidence não oferece acesso automatizado; use o botão &quot;Pesquisar no OpenEvidence&quot; para a consulta direta com a pergunta já montada.</p><p style="margin:0;white-space:pre-line">${h(opts.searchNote)}</p></div>` : ''}
 ${items.map(row).join('') || '<div class="card muted">Nenhuma sugestão ainda. Clique em "Sugerir conduta com IA" ou adicione um item manualmente abaixo.</div>'}
@@ -290,7 +291,7 @@ export function rulesPage(rules: Rule[], guidances: Guidance[]): string {
     const normal = r.normal_min !== null || r.normal_max !== null ? `${r.normal_min ?? '…'} – ${r.normal_max ?? '…'}` : '<span class="muted">do laudo</span>';
     return `<tr><td><a href="/regras/${r.id}">${h(r.exam_canonical)}</a><div class="muted small">${h(SYSTEMS[r.system] ?? r.system)} · ${h(r.aliases.join(' | '))}</div></td><td>${h(cond)}</td><td class="num">${normal}</td><td class="num">${r.target_min !== null || r.target_max !== null || r.target_text ? `${target} ${h(r.unit)}` : '<span class="muted">definir</span>'}</td><td class="num">${r.critical_low ?? '—'} / ${r.critical_high ?? '—'}</td><td class="small">${h(r.guidance_ids.join(', ') || '—')}</td><td class="small">${h(r.clinical_source)}<div class="muted">v${h(r.version)} · ${fmtDate(r.reviewed_at)}</div></td><td>${statusTag(r.status)}</td></tr>`;
   }).join('');
-  return `<div class="pagehead"><div><div class="crumbs">Configuração clínica</div><h1>Exames e referências</h1><div class="sub">Para cada exame: faixa de <b>normalidade</b> (sua, ou lida do laudo automaticamente quando vazia), alvo <b>ótimo</b> (classificação e score) e limites críticos. Só regras ativas classificam.</div></div><div class="actions"><a class="btn sec" href="/regras/exportar.csv">Exportar CSV</a><form method="post" action="/regras/importar" enctype="multipart/form-data" class="actions inline"><input type="file" name="csv" accept=".csv,text/csv" required style="width:auto"><button class="btn sec" type="submit">Importar CSV</button></form><a class="btn" href="/regras/nova">Nova regra</a></div></div>
+  return `<div class="pagehead"><div><div class="crumbs">Configuração clínica</div><h1>Exames e referências</h1><div class="sub">Para cada exame: faixa de <b>normalidade</b> (sua, ou lida do laudo automaticamente quando vazia), alvo <b>ótimo</b> (classificação e score) e limites críticos. Só regras ativas classificam.</div></div><div class="actions"><a class="btn" href="/regras/rapido">Ajuste rápido (barra)</a><a class="btn sec" href="/regras/exportar.csv">Exportar CSV</a><form method="post" action="/regras/importar" enctype="multipart/form-data" class="actions inline"><input type="file" name="csv" accept=".csv,text/csv" required style="width:auto"><button class="btn sec" type="submit">Importar CSV</button></form><a class="btn sec" href="/regras/nova">Nova regra</a></div></div>
 <p class="muted small">O CSV usa o mesmo formato de <code>skill/references/valores-otimizados.csv</code>; cada linha importada vira uma regra nova (edite ou exclua as antigas antes se for substituir).</p>
 <p class="muted small">Catálogo inicial importado em rascunho com faixas laboratoriais usuais: revise, defina o ótimo e ative. Linhas com fonte "EXEMPLO" não podem ser ativadas. ${guidances.length} orientações cadastradas.</p>
 <div class="card flush"><div class="tablewrap"><table><thead><tr><th>Exame / sistema / aliases</th><th>Condições</th><th class="num">Normalidade</th><th class="num">Alvo ótimo</th><th class="num">Crítico inf./sup.</th><th>Orientações</th><th>Fonte</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="8" class="muted">Nenhuma regra.</td></tr>'}</tbody></table></div></div>`;
@@ -371,4 +372,119 @@ export interface AuditRow { id: number; created_at: string; user: string; action
 
 export function auditPage(rows: AuditRow[]): string {
   return `<div class="pagehead"><div><div class="crumbs">Administração</div><h1>Auditoria</h1><div class="sub">Últimos 300 eventos</div></div></div><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Entidade</th><th>Detalhes</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmtDate(r.created_at)}</td><td>${h(r.user)}</td><td>${h(r.action)}</td><td>${h(r.entity)} ${h(r.entity_id ?? '')}</td><td class="small muted">${h((r.details ?? '').slice(0, 200))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nada registrado.</td></tr>'}</tbody></table></div></div>`;
+}
+
+/** Barra colorida das faixas: crítico ↓ | normal ↓ | ótimo | normal ↑ | crítico ↑ */
+export function bandBar(r: Rule): string {
+  const vals = [r.critical_low, r.normal_min, r.target_min, r.target_max, r.normal_max, r.critical_high];
+  const known = vals.filter((v): v is number => v !== null);
+  const lo = known.length ? Math.min(...known) : 0;
+  const hi = known.length ? Math.max(...known) : 1;
+  const span = hi - lo || 1;
+  const pad = span * 0.15;
+  const left = lo - pad;
+  const total = span + pad * 2;
+  const pct = (v: number) => Math.max(0, Math.min(100, ((v - left) / total) * 100));
+  const b = { cl: r.critical_low, nl: r.normal_min, tl: r.target_min, th: r.target_max, nh: r.normal_max, ch: r.critical_high };
+  const greenL = b.tl ?? b.nl ?? null;
+  const greenR = b.th ?? b.nh ?? null;
+  const segs: Array<[number, number, string, string]> = [];
+  const startRed = 0;
+  const amberL = b.nl !== null ? pct(b.nl) : greenL !== null ? pct(greenL) : 0;
+  const gL = greenL !== null ? pct(greenL) : amberL;
+  const gR = greenR !== null ? pct(greenR) : 100;
+  const amberR = b.nh !== null ? pct(b.nh) : gR;
+  segs.push([startRed, amberL, '#ef4444', 'crítico/baixo']);
+  segs.push([amberL, gL, '#f59e0b', 'normal baixo']);
+  segs.push([gL, gR, '#22c55e', 'ótimo']);
+  segs.push([gR, amberR, '#f59e0b', 'normal alto']);
+  segs.push([amberR, 100, '#ef4444', 'alto/crítico']);
+  const marks = [b.cl, b.nl, b.tl, b.th, b.nh, b.ch].map((v, i) => (v === null ? '' : `<span style="position:absolute;left:${pct(v)}%;top:14px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap">${['c↓', 'n↓', 'ó↓', 'ó↑', 'n↑', 'c↑'][i]} ${v}</span>`)).join('');
+  return `<div style="position:relative;height:30px;margin:6px 0 2px"><div style="display:flex;height:12px;border-radius:6px;overflow:hidden">${segs.map(([a, c, color, title]) => `<div title="${title}" style="width:${Math.max(0, c - a)}%;background:${color}"></div>`).join('')}</div>${marks}</div>`;
+}
+
+export function quickRulesPage(rules: Rule[], system: string | null): string {
+  const groups = new Map<string, Rule[]>();
+  for (const r of rules) {
+    if (system && r.system !== system) continue;
+    groups.set(r.system, [...(groups.get(r.system) ?? []), r]);
+  }
+  const tabs = ['', ...Object.keys(SYSTEMS)].map((k) => `<a class="btn ${(system ?? '') === k ? '' : 'sec'} sm" href="/regras/rapido${k ? `?sistema=${k}` : ''}">${k ? h(SYSTEMS[k] ?? k) : 'Todos'}</a>`).join('');
+  const field = (name: string, value: number | null, label: string) => `<div><label style="margin-top:0">${label}</label><input name="${name}" type="number" step="any" value="${value ?? ''}" placeholder="—" style="min-height:34px;padding:4px 8px"></div>`;
+  const row = (r: Rule) => `<form method="post" action="/regras/${r.id}/rapido" class="card" style="padding:12px 16px;margin-bottom:8px">
+<div class="actions" style="justify-content:space-between"><div><b>${h(r.exam_canonical)}</b> <span class="muted small">${h(r.unit)}${r.sex !== 'todos' || r.contexts.some((c) => c !== 'geral') ? ` · ${h([r.sex !== 'todos' ? r.sex : '', ...r.contexts.filter((c) => c !== 'geral')].filter(Boolean).join(' · '))}` : ''}</span><div class="muted small">${h(r.aliases.slice(0, 4).join(' | '))}</div></div>
+<div class="actions"><select name="status" style="width:auto;min-height:34px;padding:4px 8px">${['rascunho', 'ativo', 'inativo'].map((x) => option(x, x, r.status)).join('')}</select><button class="btn sm" type="submit">Salvar</button><a class="btn sec sm" href="/regras/${r.id}">Completo</a></div></div>
+${bandBar(r)}
+<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-top:10px">${field('critical_low', r.critical_low, 'Crítico ↓')}${field('normal_min', r.normal_min, 'Normal ↓')}${field('target_min', r.target_min, 'Ótimo ↓')}${field('target_max', r.target_max, 'Ótimo ↑')}${field('normal_max', r.normal_max, 'Normal ↑')}${field('critical_high', r.critical_high, 'Crítico ↑')}</div></form>`;
+  const body = [...groups.entries()].map(([sys, rs]) => `<h2>${h(SYSTEMS[sys] ?? sys)} <span class="muted small">(${rs.length})</span></h2>${rs.map(row).join('')}`).join('');
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/regras">Exames e referências</a> / edição rápida</div><h1>Ajuste rápido das referências</h1><div class="sub">Seis valores por exame, da esquerda para a direita: crítico baixo, normal baixo, ótimo baixo, ótimo alto, normal alto, crítico alto. Vazio = sem limite (normal vazio usa a referência do laudo). Mude o status para <b>ativo</b> quando revisar.</div></div><a class="btn sec" href="/regras">Lista completa</a></div>
+<div class="actions" style="margin-bottom:14px">${tabs}</div>
+${body || '<div class="card muted">Nenhum exame neste sistema.</div>'}`;
+}
+
+export interface ReportListRow { analysis_id: number; case_id: number; patient_code: string; patient_name: string; score: number | null; created_at: string; finalized_at: string | null; ai_used: boolean }
+
+export interface ReportSettings { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean }
+
+export function reportsPage(rows: ReportListRow[], settings: ReportSettings, error: string | null, isAdmin: boolean): string {
+  const list = rows.map((r) => `<tr><td><a href="/casos/${r.case_id}/analises/${r.analysis_id}" style="font-weight:600;text-decoration:none">#${r.analysis_id}</a></td><td><a href="/casos/${r.case_id}">${h(r.patient_code)}</a><div class="muted small">${h(r.patient_name || '')}</div></td><td class="num">${r.score ?? '—'}</td><td>${r.finalized_at ? '<span class="tag revisado">final</span>' : '<span class="tag aberto">minuta</span>'}</td><td>${fmtDate(r.created_at)}</td><td class="actions"><a class="btn sec sm" href="/casos/${r.case_id}/analises/${r.analysis_id}/imprimir?tipo=resumido">PDF resumido</a><a class="btn sec sm" href="/casos/${r.case_id}/analises/${r.analysis_id}/imprimir?tipo=tecnico">PDF técnico</a></td></tr>`).join('');
+  const chk = (name: keyof ReportSettings, label: string) => `<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 14px 4px 0;color:var(--ink)"><input type="checkbox" name="${name}" value="1"${settings[name] ? ' checked' : ''}>${label}</label>`;
+  return `<div class="pagehead"><div><div class="crumbs">Relatórios</div><h1>Relatórios</h1><div class="sub">Todos os relatórios gerados e o que entra neles (cabeçalho, textos padrão, assinatura).</div></div></div>
+${error ? `<div class="flash err">${h(error)}</div>` : ''}
+<div class="card flush"><div class="card-head"><h2>Relatórios gerados</h2></div><div class="tablewrap"><table><thead><tr><th>Análise</th><th>Paciente</th><th class="num">Score</th><th>Status</th><th>Gerado</th><th></th></tr></thead><tbody>${list || '<tr><td colspan="6" class="muted">Nenhum relatório ainda.</td></tr>'}</tbody></table></div></div>
+<form method="post" action="/relatorios/config" class="card"><h2 style="margin-top:0">O que entra nos relatórios</h2>${isAdmin ? '' : '<p class="muted small">Só o administrador altera estes textos.</p>'}
+<div class="grid"><div><label>Nome da clínica (cabeçalho)</label><input name="clinic_name" value="${attr(settings.clinic_name)}"${isAdmin ? '' : ' readonly'}></div><div><label>Dados da clínica (endereço, telefone, site)</label><input name="clinic_info" value="${attr(settings.clinic_info)}"${isAdmin ? '' : ' readonly'}></div><div><label>Assinatura (nome, CRM)</label><input name="signature" value="${attr(settings.signature)}"${isAdmin ? '' : ' readonly'}></div></div>
+<label>Texto de abertura do relatório resumido (paciente)</label><textarea name="patient_intro"${isAdmin ? '' : ' readonly'}>${h(settings.patient_intro)}</textarea>
+<label>Texto de encerramento do resumido</label><textarea name="patient_closing"${isAdmin ? '' : ' readonly'}>${h(settings.patient_closing)}</textarea>
+<label>Rodapé do relatório técnico</label><textarea name="technical_footer"${isAdmin ? '' : ' readonly'}>${h(settings.technical_footer)}</textarea>
+<div style="margin-top:10px">${chk('show_score', 'Mostrar score (velocímetro)')}${chk('show_systems', 'Mostrar leitura por sistema')}${chk('show_guidances', 'Incluir orientações da biblioteca no resumido')}</div>
+${isAdmin ? '<p><button class="btn" type="submit">Salvar</button></p>' : ''}</form>`;
+}
+
+export const FORMULA_KIND_LABEL: Record<string, string> = { manipulada: 'Fórmula manipulada', medicamento: 'Medicamento', suplemento: 'Suplemento' };
+
+export function formulasPage(formulas: Formula[], aiOn: boolean, error: string | null): string {
+  const kinds = ['manipulada', 'medicamento', 'suplemento'];
+  const section = (k: string) => {
+    const items = formulas.filter((f) => f.kind === k);
+    return `<h2>${h(FORMULA_KIND_LABEL[k] ?? k)} <span class="muted small">(${items.length})</span></h2><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Nome</th><th>Composição</th><th>Posologia</th><th>Exames</th><th>Status</th></tr></thead><tbody>${items.map((f) => `<tr><td><a href="/formulas/${f.id}" style="font-weight:600;text-decoration:none">${h(f.name)}</a></td><td class="small" style="white-space:pre-line">${h(f.composition.slice(0, 160))}${f.composition.length > 160 ? '…' : ''}</td><td class="small">${h(f.posology.slice(0, 100))}</td><td class="small muted">${h(f.exams.join(', '))}</td><td>${statusTag(f.status)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nenhum item.</td></tr>'}</tbody></table></div></div>`;
+  };
+  return `<div class="pagehead"><div><div class="crumbs">Banco do médico</div><h1>Fórmulas e medicamentos</h1><div class="sub">Seu banco de fórmulas manipuladas, medicamentos e suplementos. Só itens <b>ativos</b> entram nas sugestões; a IA só redige rascunhos para você revisar.</div></div><div class="actions"><a class="btn" href="/formulas/nova">Novo item</a></div></div>
+${error ? `<div class="flash err">${h(error)}</div>` : ''}
+${aiOn ? `<form method="post" action="/formulas/rascunho-ia" class="card"><h2 style="margin-top:0">Criar rascunho com IA</h2><div class="grid"><div><label>Tipo</label><select name="kind">${kinds.map((k) => option(k, FORMULA_KIND_LABEL[k] ?? k, 'manipulada')).join('')}</select></div><div style="grid-column:span 2"><label>Nome ou intenção</label><input name="name" required placeholder="ex.: Fórmula para vitamina D baixa com K2 e magnésio"></div></div><label>Detalhes (opcional: componentes que quer, doses de referência, público)</label><textarea name="intent" style="min-height:60px"></textarea><p><button class="btn soft" type="submit" onclick="this.disabled=true;this.textContent='Redigindo...';this.form.submit()">Gerar rascunho</button> <span class="muted small">Abre o formulário preenchido para você revisar antes de salvar.</span></p></form>` : '<div class="flash warn">IA desligada: cadastre os itens manualmente.</div>'}
+${kinds.map(section).join('')}`;
+}
+
+export function formulaFormPage(f: Partial<Formula> | null, error: string | null, draft = false): string {
+  const v = (k: keyof Formula) => attr(f?.[k] ?? '');
+  const id = f?.id;
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/formulas">Fórmulas e medicamentos</a> / ${id ? h(f?.name ?? '') : 'novo'}</div><h1>${id ? 'Editar item' : draft ? 'Rascunho gerado pela IA' : 'Novo item'}</h1>${draft ? '<div class="sub">Revise cada campo. Nada aqui foi validado; salve como rascunho e ative só depois de conferir.</div>' : ''}</div></div>
+${error ? `<div class="flash err">${h(error)}</div>` : ''}
+<form method="post" action="${id ? `/formulas/${id}` : '/formulas'}" class="card"><div class="grid">
+<div><label>Tipo</label><select name="kind">${['manipulada', 'medicamento', 'suplemento'].map((k) => option(k, FORMULA_KIND_LABEL[k] ?? k, f?.kind ?? 'manipulada')).join('')}</select></div>
+<div style="grid-column:span 2"><label>Nome</label><input name="name" required value="${v('name')}"></div>
+<div><label>Status</label><select name="status">${['rascunho', 'ativo', 'inativo'].map((x) => option(x, x, f?.status ?? 'rascunho')).join('')}</select></div>
+</div>
+<label>Composição (um componente por linha, com dose)</label><textarea name="composition" style="min-height:110px">${h(f?.composition ?? '')}</textarea>
+<label>Posologia</label><textarea name="posology" style="min-height:60px">${h(f?.posology ?? '')}</textarea>
+<label>Indicações (quando usar; achados que motivam)</label><textarea name="indications" style="min-height:70px">${h(f?.indications ?? '')}</textarea>
+<label>Exames relacionados (ids canônicos separados por vírgula)</label><input name="exams" value="${attr((f?.exams ?? []).join(', '))}" placeholder="vitamina_d_25oh, pth">
+<label>Contraindicações, interações e monitorização</label><textarea name="contraindications" style="min-height:70px">${h(f?.contraindications ?? '')}</textarea>
+<label>Observações</label><textarea name="notes">${h(f?.notes ?? '')}</textarea>
+<p class="actions"><button class="btn" type="submit">Salvar</button><a class="btn sec" href="/formulas">Cancelar</a>${id ? `<button class="btn danger" type="submit" formaction="/formulas/${id}/excluir" formnovalidate onclick="return confirm('Excluir este item do banco?')">Excluir</button>` : ''}</p></form>`;
+}
+
+export function caseFormulasPage(opts: { c: CaseRow; analysis: AnalysisRow; formulas: Formula[]; suggestions: Array<{ formula: Formula; justificativa: string; ajuste: string; conductId: number | null; status: string | null }>; note: string | null; aiOn: boolean; error: string | null }): string {
+  const { c, analysis: a } = opts;
+  const finalized = !!a.finalized_at;
+  const sug = opts.suggestions.map((s) => `<div class="card" style="border-left:4px solid ${s.status === 'aprovada' ? 'var(--ok)' : s.status === 'rejeitada' ? 'var(--neutral)' : 'var(--warn)'}"><div class="actions" style="justify-content:space-between"><div><b>${h(s.formula.name)}</b> <span class="tag inativo">${h(FORMULA_KIND_LABEL[s.formula.kind] ?? s.formula.kind)}</span> ${s.status ? `<span class="tag ${s.status === 'aprovada' ? 'ativo' : s.status === 'rejeitada' ? 'inativo' : 'rascunho'}">${h(s.status)}</span>` : ''}</div>${finalized || !s.conductId ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/${s.conductId}" class="actions inline"><input type="hidden" name="kind" value="${s.formula.kind === 'suplemento' ? 'suplementacao' : 'medicamentoso'}"><input type="hidden" name="title" value="${attr(s.formula.name)}"><input type="hidden" name="rationale" value="${attr(`${s.justificativa}\n\nComposição: ${s.formula.composition}\nPosologia: ${s.formula.posology}${s.ajuste ? `\nAjuste sugerido: ${s.ajuste}` : ''}`)}"><button class="btn sm" type="submit" name="action" value="aprovar">Aprovar</button><button class="btn sec sm" type="submit" name="action" value="rejeitar">Rejeitar</button></form>`}</div>
+<p style="margin:8px 0 4px"><b>Por quê:</b> ${h(s.justificativa)}</p>${s.ajuste ? `<p style="margin:0 0 4px"><b>Ajuste sugerido:</b> ${h(s.ajuste)}</p>` : ''}
+<details><summary class="small">Ver composição, posologia e contraindicações</summary><p class="small" style="white-space:pre-line;margin:6px 0 0">${h(s.formula.composition)}\n\n<b>Posologia:</b> ${h(s.formula.posology)}\n<b>Contraindicações:</b> ${h(s.formula.contraindications)}</p></details></div>`).join('');
+  const bank = opts.formulas.map((f) => `<tr><td><b>${h(f.name)}</b><div class="muted small">${h(FORMULA_KIND_LABEL[f.kind] ?? f.kind)} · ${h(f.exams.join(', ') || 'sem exames vinculados')}</div></td><td class="small" style="white-space:pre-line">${h(f.composition.slice(0, 140))}</td><td class="small">${h(f.posology.slice(0, 80))}</td><td>${finalized ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/formulas/${f.id}/adicionar" class="inline"><button class="btn sec sm" type="submit">Adicionar à conduta</button></form>`}</td></tr>`).join('');
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / <a href="/casos/${c.id}">${h(c.patient_code)}</a> / <a href="/casos/${c.id}/analises/${a.id}">análise #${a.id}</a> / fórmulas</div><h1>Sugestão de fórmulas e medicamentos</h1><div class="sub">Itens do seu banco que se aplicam a este caso. Aprovar leva o item para a conduta; nada vai ao relatório sem a sua aprovação.</div></div>
+<div class="actions"><a class="btn sec" href="/casos/${c.id}/analises/${a.id}/conduta">Ir para a conduta</a>${finalized || !opts.aiOn ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/formulas/sugerir" class="inline"><button class="btn soft" type="submit" onclick="this.disabled=true;this.textContent='Analisando o banco...';this.form.submit()">Sugerir com IA</button></form>`}</div></div>
+${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
+${opts.note ? `<div class="card"><b>Observação da IA:</b> ${h(opts.note)}</div>` : ''}
+${sug || '<div class="card muted">Nenhuma sugestão ainda. Clique em "Sugerir com IA" (usa só os itens ativos do banco) ou adicione direto do banco abaixo.</div>'}
+<h2>Seu banco (itens ativos)</h2><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Item</th><th>Composição</th><th>Posologia</th><th></th></tr></thead><tbody>${bank || `<tr><td colspan="4" class="muted">Nenhum item ativo. Cadastre em <a href="/formulas">Fórmulas e medicamentos</a>.</td></tr>`}</tbody></table></div></div>`;
 }

@@ -56,6 +56,9 @@ export const SYSTEMS: Record<string, string> = {
   inflamacao: 'Inflamação',
   hormonal: 'Hormônios',
   cardiovascular: 'Risco cardiovascular',
+  osseo: 'Metabolismo ósseo',
+  saliva: 'Exames de saliva',
+  urina: 'Urina',
   outros: 'Outros',
 };
 

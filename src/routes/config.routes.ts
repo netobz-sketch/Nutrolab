@@ -2,12 +2,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { createResetToken, hashPassword, requireAdmin, requireAuth, userExists } from '../auth.js';
 import { appUrl, mailEnabled } from '../mail.js';
-import { AI_MODEL, aiEnabled } from '../ai.js';
-import { allGuidances, allRules, audit, enabledCalcIds, getDb, num, parseCsv, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
+import { AI_MODEL, aiEnabled, AiError, draftFormula } from '../ai.js';
+import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, num, numOrNull, parseCsv, reportSettings, rowToFormula, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
 import { CALCS, CLASSIFICATIONS, CONTEXTS, SYSTEMS } from '../engine/index.js';
 import { normalizeCouncilNumber, normalizeCpf } from '../cpf.js';
 import { layout } from '../views/html.js';
-import { auditPage, guidanceFormPage, guidancesPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type UserRow } from '../views/pages.js';
+import { auditPage, formulaFormPage, formulasPage, guidanceFormPage, guidancesPage, quickRulesPage, reportsPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type ReportListRow, type UserRow } from '../views/pages.js';
 
 const numOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isFinite(n), 'número inválido');
 const intOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isInteger(n), 'inteiro inválido');
@@ -87,6 +87,91 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   /* ---------------------------------------------------------------- regras */
   app.get('/regras', async (request, reply) => page(request, reply, 'Regras', rulesPage(allRules(), allGuidances())));
   app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, allGuidances(), null, calcIds)));
+
+  app.get('/regras/rapido', async (request, reply) => {
+    const sys = (request.query as { sistema?: string }).sistema ?? null;
+    return page(request, reply, 'Ajuste rápido', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null));
+  });
+
+  const QuickBody = z.object({ critical_low: numOpt, normal_min: numOpt, target_min: numOpt, target_max: numOpt, normal_max: numOpt, critical_high: numOpt, status: z.enum(['ativo', 'rascunho', 'inativo']) });
+  app.post('/regras/:id/rapido', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getDb().prepare('SELECT * FROM rules WHERE id = ?').get(id) as Row | undefined;
+    if (!row) return reply.code(404).send('Regra não encontrada');
+    const parsed = QuickBody.safeParse(request.body);
+    const back = (msg: string, kind = 'err') => reply.redirect(`/regras/rapido?sistema=${encodeURIComponent(str(row, 'system'))}&kind=${kind}&msg=${encodeURIComponent(msg)}#r${id}`);
+    if (!parsed.success) return back(`${str(row, 'exam_canonical')}: ${firstIssue(parsed.error)}`);
+    const d = parsed.data;
+    const seq = [d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high].filter((v): v is number => v !== null);
+    for (let i = 1; i < seq.length; i += 1) if ((seq[i] ?? 0) < (seq[i - 1] ?? 0)) return back(`${str(row, 'exam_canonical')}: os valores precisam crescer da esquerda para a direita (crítico ↓ ≤ normal ↓ ≤ ótimo ↓ ≤ ótimo ↑ ≤ normal ↑ ≤ crítico ↑).`);
+    if (d.status === 'ativo' && /^exemplo/i.test(str(row, 'clinical_source'))) return back(`${str(row, 'exam_canonical')}: linha de exemplo não pode ser ativada; abra "Completo" e informe a fonte clínica.`);
+    if (d.status === 'ativo' && seq.length === 0 && !strOrNull(row, 'target_text')) return back(`${str(row, 'exam_canonical')}: para ativar, informe ao menos uma faixa.`);
+    getDb().prepare("UPDATE rules SET critical_low=?, normal_min=?, target_min=?, target_max=?, normal_max=?, critical_high=?, status=?, reviewed_at=date('now'), updated_by=?, updated_at=datetime('now') WHERE id=?").run(d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high, d.status, request.user?.id ?? null, id);
+    audit(request.user?.id ?? null, 'editar_rapido', 'rule', id, { before: { cl: numOrNull(row, 'critical_low'), nl: numOrNull(row, 'normal_min'), tl: numOrNull(row, 'target_min'), th: numOrNull(row, 'target_max'), nh: numOrNull(row, 'normal_max'), ch: numOrNull(row, 'critical_high'), status: str(row, 'status') }, after: d }, request.id);
+    return back(`${str(row, 'exam_canonical')} salvo (${d.status}).`, 'ok');
+  });
+
+  /* -------------------------------------------------------------- fórmulas */
+  const FormulaBody = z.object({ name: z.string().trim().min(2).max(160), kind: z.enum(['manipulada', 'medicamento', 'suplemento']), composition: z.string().trim().max(4000).default(''), posology: z.string().trim().max(2000).default(''), indications: z.string().trim().max(3000).default(''), exams: z.string().trim().max(500).default(''), contraindications: z.string().trim().max(3000).default(''), notes: z.string().trim().max(3000).default(''), status: z.enum(['ativo', 'rascunho', 'inativo']) });
+  app.get('/formulas', async (request, reply) => page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), null)));
+  app.get('/formulas/nova', async (request, reply) => page(request, reply, 'Novo item', formulaFormPage(null, null)));
+  app.get('/formulas/:id', async (request, reply) => {
+    const row = getDb().prepare('SELECT * FROM formulas WHERE id = ?').get(Number((request.params as { id: string }).id)) as Row | undefined;
+    if (!row) return reply.code(404).send('Item não encontrado');
+    return page(request, reply, 'Item', formulaFormPage(rowToFormula(row), null));
+  });
+  app.post('/formulas/rascunho-ia', async (request, reply) => {
+    const body = (request.body ?? {}) as { name?: string; kind?: string; intent?: string };
+    const name = (body.name ?? '').trim();
+    const kind = ['manipulada', 'medicamento', 'suplemento'].includes(body.kind ?? '') ? (body.kind as string) : 'manipulada';
+    if (!name) return page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), 'Informe um nome ou intenção.'));
+    try {
+      const draft = await draftFormula(name, kind, (body.intent ?? '').trim(), [...new Set(allRules().map((r) => r.exam_canonical))]);
+      audit(request.user?.id ?? null, 'formula_rascunho_ia', 'formula', null, { name }, request.id);
+      return page(request, reply, 'Rascunho', formulaFormPage({ name: draft.nome || name, kind: kind as 'manipulada', composition: draft.composicao, posology: draft.posologia, indications: draft.indicacoes, exams: draft.exames, contraindications: draft.contraindicacoes, notes: draft.observacoes, status: 'rascunho' }, null, true));
+    } catch (error) {
+      request.log.error({ err: error }, 'falha no rascunho de fórmula');
+      return page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), error instanceof AiError ? error.message : 'Falha inesperada na IA.'));
+    }
+  });
+  const saveFormula = async (request: FastifyRequest, reply: FastifyReply, id: number | null) => {
+    const parsed = FormulaBody.safeParse(request.body);
+    const current = id ? (getDb().prepare('SELECT * FROM formulas WHERE id = ?').get(id) as Row | undefined) : undefined;
+    if (id && !current) return reply.code(404).send('Item não encontrado');
+    if (!parsed.success) return page(request, reply, 'Item', formulaFormPage(current ? rowToFormula(current) : null, firstIssue(parsed.error)));
+    const d = parsed.data;
+    const exams = d.exams.split(/[,|]/).map((x) => x.trim()).filter(Boolean).join('|');
+    const params = [d.name, d.kind, d.composition, d.posology, d.indications, exams, d.contraindications, d.notes, d.status];
+    let fid = id;
+    if (id) getDb().prepare("UPDATE formulas SET name=?, kind=?, composition=?, posology=?, indications=?, exams=?, contraindications=?, notes=?, status=?, updated_at=datetime('now') WHERE id=?").run(...params, id);
+    else fid = Number(getDb().prepare('INSERT INTO formulas(name, kind, composition, posology, indications, exams, contraindications, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params, request.user?.id ?? null).lastInsertRowid);
+    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'formula', fid, { before: current ? rowToFormula(current) : null, after: d }, request.id);
+    return ok(reply, '/formulas', `${d.name} salvo (${d.status}).`);
+  };
+  app.post('/formulas', async (request, reply) => saveFormula(request, reply, null));
+  app.post('/formulas/:id', async (request, reply) => saveFormula(request, reply, Number((request.params as { id: string }).id)));
+  app.post('/formulas/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getDb().prepare('SELECT * FROM formulas WHERE id = ?').get(id) as Row | undefined;
+    if (!row) return reply.code(404).send('Item não encontrado');
+    getDb().prepare('DELETE FROM formulas WHERE id = ?').run(id);
+    audit(request.user?.id ?? null, 'excluir', 'formula', id, { before: rowToFormula(row) }, request.id);
+    return ok(reply, '/formulas', 'Item excluído.');
+  });
+
+  /* ------------------------------------------------------------- relatórios */
+  const reportsList = (): ReportListRow[] => (getDb().prepare('SELECT a.id AS analysis_id, a.case_id, a.score, a.created_at, a.finalized_at, a.ai_used, c.patient_code, c.patient_name FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.deleted_at IS NULL ORDER BY a.id DESC LIMIT 200').all() as Row[]).map((r) => ({ analysis_id: num(r, 'analysis_id'), case_id: num(r, 'case_id'), patient_code: str(r, 'patient_code'), patient_name: str(r, 'patient_name'), score: numOrNull(r, 'score'), created_at: str(r, 'created_at'), finalized_at: strOrNull(r, 'finalized_at'), ai_used: num(r, 'ai_used') === 1 }));
+  app.get('/relatorios', async (request, reply) => page(request, reply, 'Relatórios', reportsPage(reportsList(), reportSettings(), null, request.user?.role === 'admin')));
+  const ReportCfg = z.object({ clinic_name: z.string().trim().max(120).default(''), clinic_info: z.string().trim().max(300).default(''), signature: z.string().trim().max(200).default(''), patient_intro: z.string().trim().max(2000).default(''), patient_closing: z.string().trim().max(2000).default(''), technical_footer: z.string().trim().max(2000).default(''), show_score: z.string().optional(), show_systems: z.string().optional(), show_guidances: z.string().optional() });
+  app.post('/relatorios/config', { preHandler: requireAdmin }, async (request, reply) => {
+    const parsed = ReportCfg.safeParse(request.body);
+    if (!parsed.success) return page(request, reply, 'Relatórios', reportsPage(reportsList(), reportSettings(), firstIssue(parsed.error), true));
+    const d = parsed.data;
+    for (const k of ['clinic_name', 'clinic_info', 'signature', 'patient_intro', 'patient_closing', 'technical_footer'] as const) setSetting(`report.${k}`, d[k]);
+    for (const k of ['show_score', 'show_systems', 'show_guidances'] as const) setSetting(`report.${k}`, d[k] === '1' ? '1' : '0');
+    audit(request.user?.id ?? null, 'editar', 'settings', 'relatorios', d, request.id);
+    return ok(reply, '/relatorios', 'Configuração dos relatórios salva.');
+  });
   app.get('/regras/:id', async (request, reply) => {
     const row = getDb().prepare('SELECT * FROM rules WHERE id = ?').get(Number((request.params as { id: string }).id)) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');

@@ -251,3 +251,54 @@ test('login profissional: nome + CPF + conselho + senha; perfil e cadastro pelo 
   assert.match(perfil.body, /529\.982\.247-25/);
   cookie = adminCookie;
 });
+
+test('ajuste rápido das referências: ordem validada, barra renderizada, ativação', async () => {
+  const pageQ = await get('/regras/rapido?sistema=vitaminas');
+  assert.equal(pageQ.statusCode, 200);
+  assert.match(pageQ.body, /Crítico ↓/);
+  assert.match(pageQ.body, /background:#22c55e/);
+  const bad = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '60', target_max: '50', normal_max: '100', critical_high: '150', status: 'ativo' });
+  assert.match(bad.headers.location ?? '', /crescer%20da%20esquerda/);
+  const okq = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '40', target_max: '80', normal_max: '100', critical_high: '150', status: 'ativo' });
+  assert.match(okq.headers.location ?? '', /kind=ok/);
+  const previa = (await get('/casos/1/previa')).json().data as Array<{ exam: string | null; classification: string }>;
+  assert.equal(previa[0]?.classification, 'abaixo_do_alvo');
+});
+
+test('aba Relatórios: lista e configuração entram no relatório', async () => {
+  const list = await get('/relatorios');
+  assert.equal(list.statusCode, 200);
+  assert.match(list.body, /P-0001/);
+  const cfg = await post('/relatorios/config', { clinic_name: 'Clínica Teste', clinic_info: 'Rua A, 1', signature: 'Dra. Teste · CRM 000', patient_intro: 'Olá! Este é o seu relatório.', patient_closing: 'Até a consulta.', technical_footer: 'Documento técnico.', show_score: '1', show_systems: '1', show_guidances: '1' });
+  assert.equal(cfg.statusCode, 302);
+  await post('/casos/1/analisar', {});
+  const dl = await get('/casos/1/analises/2/download?tipo=resumido');
+  assert.match(dl.body, /Clínica Teste/);
+  assert.match(dl.body, /Olá! Este é o seu relatório\./);
+  assert.match(dl.body, /Até a consulta\./);
+});
+
+test('banco de fórmulas: cadastro, ativação e inclusão na conduta do caso', async () => {
+  const created = await post('/formulas', { name: 'Vitamina D3 10.000 UI + K2', kind: 'manipulada', composition: 'Colecalciferol 10.000 UI\nMenaquinona-7 100 mcg', posology: '1 cápsula ao dia, após o almoço', indications: 'Vitamina D abaixo do alvo', exams: 'vitamina_d_25oh', contraindications: 'Hipercalcemia; uso de varfarina', notes: '', status: 'ativo' });
+  assert.equal(created.statusCode, 302);
+  const bank = await get('/formulas');
+  assert.match(bank.body, /Vitamina D3 10\.000 UI \+ K2/);
+  const fid = /\/formulas\/(\d+)"/.exec(bank.body)?.[1];
+  assert.ok(fid);
+  const casePage = await get('/casos/1/analises/2/formulas');
+  assert.equal(casePage.statusCode, 200);
+  assert.match(casePage.body, /Adicionar à conduta/);
+  const add = await post(`/casos/1/analises/2/formulas/${fid}/adicionar`, {});
+  assert.equal(add.statusCode, 302);
+  const conduct = await get('/casos/1/analises/2/conduta');
+  assert.match(conduct.body, /Vitamina D3 10\.000 UI \+ K2/);
+  assert.match(conduct.body, /biblioteca/);
+  const fin = await post('/casos/1/analises/2/finalizar', { action: 'finalizar', doctor_notes: '' });
+  assert.equal(fin.statusCode, 302);
+  const dlT = await get('/casos/1/analises/2/download?tipo=tecnico');
+  assert.match(dlT.body, /Medicamentoso/);
+  assert.match(dlT.body, /Colecalciferol 10\.000 UI/);
+  const dlP = await get('/casos/1/analises/2/download?tipo=resumido');
+  assert.match(dlP.body, /Vitamina D3 10\.000 UI \+ K2/);
+  assert.doesNotMatch(dlP.body, /Hipercalcemia/);
+});

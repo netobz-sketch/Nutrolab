@@ -216,6 +216,21 @@ CREATE TABLE IF NOT EXISTS conduct_items (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_conduct_case ON conduct_items(case_id);
+CREATE TABLE IF NOT EXISTS formulas (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('manipulada','medicamento','suplemento')),
+  composition TEXT NOT NULL DEFAULT '',
+  posology TEXT NOT NULL DEFAULT '',
+  indications TEXT NOT NULL DEFAULT '',
+  exams TEXT NOT NULL DEFAULT '',
+  contraindications TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'rascunho' CHECK (status IN ('ativo','rascunho','inativo')),
+  created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 function migrate(database: DatabaseSync): void {
@@ -422,55 +437,179 @@ export function rulesToCsv(rules: Rule[]): string {
  * ainda não existem na tabela.
  */
 const CATALOG: Array<[exam: string, aliases: string, system: string, unit: string, nmin: number | null, nmax: number | null]> = [
+  // --- metabolismo glicídico
   ['glicose_jejum', 'Glicose|Glicemia de jejum|Glicose em jejum', 'metabolico', 'mg/dL', 70, 99],
   ['insulina_jejum', 'Insulina|Insulina basal|Insulina de jejum', 'metabolico', 'µUI/mL', 2.6, 24.9],
   ['hba1c', 'Hemoglobina glicada|A1c|HbA1c', 'metabolico', '%', null, 5.6],
   ['homa_ir', 'HOMA-IR|HOMA', 'metabolico', 'adimensional', null, 2.7],
+  ['peptideo_c', 'Peptídeo C|C-peptídeo', 'metabolico', 'ng/mL', 1.1, 4.4],
+  ['frutosamina', 'Frutosamina', 'metabolico', 'µmol/L', 205, 285],
+  ['glicose_pos_prandial', 'Glicemia pós-prandial|Glicose 2h', 'metabolico', 'mg/dL', null, 140],
+  ['leptina', 'Leptina', 'metabolico', 'ng/mL', null, null],
+  ['adiponectina', 'Adiponectina', 'metabolico', 'µg/mL', null, null],
+  // --- lipídico / cardiovascular
   ['colesterol_total', 'Colesterol total', 'lipidico', 'mg/dL', null, 190],
   ['hdl', 'HDL|HDL colesterol|HDL-c', 'lipidico', 'mg/dL', 40, null],
   ['ldl', 'LDL|LDL colesterol|LDL-c', 'lipidico', 'mg/dL', null, 130],
+  ['vldl', 'VLDL', 'lipidico', 'mg/dL', null, 30],
   ['colesterol_nao_hdl', 'Não-HDL|Colesterol não HDL', 'lipidico', 'mg/dL', null, 160],
   ['triglicerideos', 'Triglicerídeos|Triglicérides|TG', 'lipidico', 'mg/dL', null, 150],
+  ['apolipoproteina_a1', 'Apolipoproteína A1|ApoA1', 'cardiovascular', 'mg/dL', 110, 205],
   ['apolipoproteina_b', 'Apolipoproteína B|ApoB', 'cardiovascular', 'mg/dL', null, 130],
   ['lipoproteina_a', 'Lipoproteína (a)|Lp(a)', 'cardiovascular', 'mg/dL', null, 30],
+  ['homocisteina', 'Homocisteína', 'cardiovascular', 'µmol/L', 5, 15],
+  ['ck', 'CK|CPK|Creatinofosfoquinase', 'cardiovascular', 'U/L', null, 190],
+  ['ldh', 'LDH|Desidrogenase láctica', 'cardiovascular', 'U/L', 120, 246],
+  ['fibrinogenio', 'Fibrinogênio', 'cardiovascular', 'mg/dL', 200, 400],
+  ['indice_omega3', 'Índice ômega-3|Omega-3 index', 'cardiovascular', '%', null, null],
+  // --- tireoide
   ['tsh', 'TSH|Hormônio tireoestimulante', 'tireoide', 'µUI/mL', 0.4, 4.5],
   ['t4_livre', 'T4 livre|Tiroxina livre', 'tireoide', 'ng/dL', 0.8, 1.8],
+  ['t4_total', 'T4 total|Tiroxina total', 'tireoide', 'µg/dL', 4.5, 12],
   ['t3_livre', 'T3 livre|Triiodotironina livre', 'tireoide', 'pg/mL', 2.3, 4.2],
+  ['t3_total', 'T3 total|Triiodotironina total', 'tireoide', 'ng/dL', 80, 200],
+  ['t3_reverso', 'T3 reverso|rT3', 'tireoide', 'ng/dL', 10, 24],
   ['anti_tpo', 'Anti-TPO|Anticorpo antitireoperoxidase', 'tireoide', 'UI/mL', null, 34],
+  ['anti_tireoglobulina', 'Anti-tireoglobulina|Anti-TG', 'tireoide', 'UI/mL', null, 115],
+  ['trab', 'TRAb|Anticorpo antirreceptor de TSH', 'tireoide', 'UI/L', null, 1.75],
+  ['tireoglobulina', 'Tireoglobulina', 'tireoide', 'ng/mL', null, null],
+  // --- hematologia
   ['hemoglobina', 'Hemoglobina|Hb', 'hematologico', 'g/dL', 12, 17.5],
   ['hematocrito', 'Hematócrito|Ht', 'hematologico', '%', 36, 52],
+  ['hemacias', 'Hemácias|Eritrócitos', 'hematologico', 'milhões/µL', 4, 5.9],
   ['vcm', 'VCM|Volume corpuscular médio', 'hematologico', 'fL', 80, 100],
+  ['hcm', 'HCM|Hemoglobina corpuscular média', 'hematologico', 'pg', 27, 33],
+  ['chcm', 'CHCM', 'hematologico', 'g/dL', 32, 36],
+  ['rdw', 'RDW', 'hematologico', '%', 11.5, 14.5],
   ['leucocitos', 'Leucócitos|Leucócitos totais', 'hematologico', '/µL', 4000, 11000],
+  ['neutrofilos', 'Neutrófilos|Segmentados', 'hematologico', '/µL', 1500, 7000],
+  ['linfocitos', 'Linfócitos', 'hematologico', '/µL', 1000, 4000],
+  ['monocitos', 'Monócitos', 'hematologico', '/µL', 100, 1000],
+  ['eosinofilos', 'Eosinófilos', 'hematologico', '/µL', 0, 500],
   ['plaquetas', 'Plaquetas', 'hematologico', '/µL', 150000, 450000],
+  ['reticulocitos', 'Reticulócitos', 'hematologico', '%', 0.5, 2],
+  // --- ferro
   ['ferritina', 'Ferritina|Ferritina sérica', 'ferro', 'ng/mL', 30, 400],
   ['ferro_serico', 'Ferro sérico|Ferro', 'ferro', 'µg/dL', 50, 170],
+  ['transferrina', 'Transferrina', 'ferro', 'mg/dL', 200, 360],
+  ['tibc', 'TIBC|Capacidade total de ligação do ferro|CTLF', 'ferro', 'µg/dL', 250, 450],
   ['saturacao_transferrina', 'Saturação de transferrina|IST', 'ferro', '%', 20, 45],
-  ['vitamina_d_25oh', '25-hidroxivitamina D|25(OH)D|Vitamina D 25-OH|Vitamina D|25-Hidroxi Vitamina D', 'vitaminas', 'ng/mL', 30, 100],
+  // --- vitaminas
+  ['vitamina_a', 'Vitamina A|Retinol', 'vitaminas', 'µg/dL', 30, 80],
+  ['vitamina_b1', 'Vitamina B1|Tiamina', 'vitaminas', 'nmol/L', 70, 180],
+  ['vitamina_b2', 'Vitamina B2|Riboflavina', 'vitaminas', 'µg/L', null, null],
+  ['vitamina_b3', 'Vitamina B3|Niacina', 'vitaminas', 'µg/L', null, null],
+  ['vitamina_b5', 'Vitamina B5|Ácido pantotênico', 'vitaminas', 'µg/L', null, null],
+  ['vitamina_b6', 'Vitamina B6|Piridoxina|Piridoxal-5-fosfato|PLP', 'vitaminas', 'µg/L', 8.7, 27.2],
+  ['vitamina_b7', 'Vitamina B7|Biotina', 'vitaminas', 'ng/L', null, null],
+  ['folato', 'Ácido fólico|Folato|Vitamina B9', 'vitaminas', 'ng/mL', 4, 20],
+  ['folato_eritrocitario', 'Folato eritrocitário', 'vitaminas', 'ng/mL', 140, 628],
   ['vitamina_b12', 'Vitamina B12|Cobalamina', 'vitaminas', 'pg/mL', 200, 900],
-  ['folato', 'Ácido fólico|Folato', 'vitaminas', 'ng/mL', 4, 20],
-  ['homocisteina', 'Homocisteína', 'cardiovascular', 'µmol/L', 5, 15],
-  ['magnesio', 'Magnésio', 'minerais', 'mg/dL', 1.7, 2.4],
-  ['calcio_total', 'Cálcio|Cálcio total', 'minerais', 'mg/dL', 8.5, 10.5],
-  ['zinco', 'Zinco|Zinco sérico', 'minerais', 'µg/dL', 70, 120],
+  ['acido_metilmalonico', 'Ácido metilmalônico|MMA', 'vitaminas', 'nmol/L', null, 270],
+  ['holotranscobalamina', 'Holotranscobalamina|B12 ativa', 'vitaminas', 'pmol/L', 35, null],
+  ['vitamina_c', 'Vitamina C|Ácido ascórbico', 'vitaminas', 'mg/dL', 0.4, 2],
+  ['vitamina_d_25oh', '25-hidroxivitamina D|25(OH)D|Vitamina D 25-OH|Vitamina D|25-Hidroxi Vitamina D', 'vitaminas', 'ng/mL', 30, 100],
+  ['vitamina_d_125', '1,25-di-hidroxivitamina D|Calcitriol|1,25(OH)2D', 'vitaminas', 'pg/mL', 20, 80],
+  ['vitamina_e', 'Vitamina E|Alfa-tocoferol', 'vitaminas', 'mg/L', 5.5, 17],
+  ['vitamina_k', 'Vitamina K|Filoquinona', 'vitaminas', 'ng/mL', null, null],
+  ['coenzima_q10', 'Coenzima Q10|CoQ10|Ubiquinona', 'vitaminas', 'µg/mL', 0.5, 1.7],
+  // --- minerais e eletrólitos
   ['sodio', 'Sódio|Na', 'minerais', 'mmol/L', 135, 145],
   ['potassio', 'Potássio|K|K+', 'minerais', 'mmol/L', 3.5, 5.1],
+  ['cloro', 'Cloro|Cloreto|Cl', 'minerais', 'mmol/L', 98, 107],
+  ['calcio_total', 'Cálcio|Cálcio total', 'minerais', 'mg/dL', 8.5, 10.5],
+  ['calcio_ionico', 'Cálcio iônico|Cálcio ionizado', 'minerais', 'mg/dL', 4.5, 5.3],
+  ['magnesio', 'Magnésio', 'minerais', 'mg/dL', 1.7, 2.4],
+  ['magnesio_eritrocitario', 'Magnésio eritrocitário|Magnésio intracelular', 'minerais', 'mg/dL', 4.2, 6.8],
+  ['fosforo', 'Fósforo', 'minerais', 'mg/dL', 2.5, 4.5],
+  ['zinco', 'Zinco|Zinco sérico', 'minerais', 'µg/dL', 70, 120],
+  ['cobre', 'Cobre|Cobre sérico', 'minerais', 'µg/dL', 70, 140],
+  ['ceruloplasmina', 'Ceruloplasmina', 'minerais', 'mg/dL', 20, 60],
+  ['selenio', 'Selênio', 'minerais', 'µg/L', 70, 150],
+  ['iodo_urinario', 'Iodo urinário|Iodúria', 'minerais', 'µg/L', 100, 299],
+  ['manganes', 'Manganês', 'minerais', 'µg/L', 4, 15],
+  ['cromo', 'Cromo', 'minerais', 'µg/L', null, null],
+  ['molibdenio', 'Molibdênio', 'minerais', 'µg/L', null, null],
+  ['litio', 'Lítio', 'minerais', 'mmol/L', null, null],
+  // --- renal
   ['creatinina', 'Creatinina', 'renal', 'mg/dL', 0.6, 1.2],
   ['ureia', 'Ureia', 'renal', 'mg/dL', 15, 45],
   ['acido_urico', 'Ácido úrico', 'renal', 'mg/dL', 2.5, 7],
   ['tfg_estimada', 'TFG|Taxa de filtração glomerular|eGFR|CKD-EPI', 'renal', 'mL/min/1.73m²', 90, null],
+  ['cistatina_c', 'Cistatina C', 'renal', 'mg/L', 0.5, 1],
+  ['microalbuminuria', 'Microalbuminúria|Albumina urinária|Relação albumina/creatinina', 'renal', 'mg/g', null, 30],
+  // --- hepático
   ['tgo', 'TGO|AST|Aspartato aminotransferase', 'hepatico', 'U/L', null, 40],
   ['tgp', 'TGP|ALT|Alanina aminotransferase', 'hepatico', 'U/L', null, 41],
   ['ggt', 'Gama GT|GGT|Gama glutamil transferase', 'hepatico', 'U/L', null, 60],
   ['fosfatase_alcalina', 'Fosfatase alcalina|FA', 'hepatico', 'U/L', 40, 130],
   ['bilirrubina_total', 'Bilirrubina total', 'hepatico', 'mg/dL', null, 1.2],
+  ['bilirrubina_direta', 'Bilirrubina direta', 'hepatico', 'mg/dL', null, 0.3],
   ['albumina', 'Albumina', 'hepatico', 'g/dL', 3.5, 5.2],
+  ['proteinas_totais', 'Proteínas totais', 'hepatico', 'g/dL', 6, 8],
+  ['amilase', 'Amilase', 'hepatico', 'U/L', 28, 100],
+  ['lipase', 'Lipase', 'hepatico', 'U/L', 13, 60],
+  // --- inflamação / imunidade
   ['pcr', 'PCR|Proteína C reativa|PCR ultrassensível|PCR-us', 'inflamacao', 'mg/L', null, 3],
   ['vhs', 'VHS|Velocidade de hemossedimentação', 'inflamacao', 'mm/h', null, 20],
+  ['interleucina_6', 'Interleucina 6|IL-6', 'inflamacao', 'pg/mL', null, 7],
+  ['tnf_alfa', 'TNF-alfa', 'inflamacao', 'pg/mL', null, null],
+  ['anti_transglutaminase', 'Anti-transglutaminase IgA|Anti-tTG', 'inflamacao', 'U/mL', null, 20],
+  ['iga_total', 'IgA total|Imunoglobulina A', 'inflamacao', 'mg/dL', 70, 400],
+  ['vitamina_d_ligante', 'Proteína ligadora de vitamina D|VDBP', 'inflamacao', 'µg/mL', null, null],
+  // --- hormônios sexuais, adrenal, hipófise
   ['testosterona_total', 'Testosterona total', 'hormonal', 'ng/dL', 300, 1000],
+  ['testosterona_livre', 'Testosterona livre', 'hormonal', 'pg/mL', null, null],
+  ['testosterona_biodisponivel', 'Testosterona biodisponível', 'hormonal', 'ng/dL', null, null],
+  ['shbg', 'SHBG|Globulina ligadora de hormônios sexuais', 'hormonal', 'nmol/L', 18, 144],
   ['estradiol', 'Estradiol|E2', 'hormonal', 'pg/mL', null, null],
-  ['cortisol', 'Cortisol|Cortisol matinal', 'hormonal', 'µg/dL', 5, 25],
-  ['dhea_s', 'DHEA-S|Sulfato de DHEA', 'hormonal', 'µg/dL', null, null],
+  ['estrona', 'Estrona|E1', 'hormonal', 'pg/mL', null, null],
+  ['progesterona', 'Progesterona', 'hormonal', 'ng/mL', null, null],
+  ['fsh', 'FSH|Hormônio folículo-estimulante', 'hormonal', 'mUI/mL', null, null],
+  ['lh', 'LH|Hormônio luteinizante', 'hormonal', 'mUI/mL', null, null],
   ['prolactina', 'Prolactina', 'hormonal', 'ng/mL', null, 25],
+  ['amh', 'Hormônio antimülleriano|AMH', 'hormonal', 'ng/mL', null, null],
+  ['dhea_s', 'DHEA-S|Sulfato de DHEA', 'hormonal', 'µg/dL', null, null],
+  ['dhea', 'DHEA', 'hormonal', 'ng/mL', null, null],
+  ['cortisol', 'Cortisol|Cortisol matinal|Cortisol sérico 8h', 'hormonal', 'µg/dL', 5, 25],
+  ['acth', 'ACTH', 'hormonal', 'pg/mL', 7, 63],
+  ['aldosterona', 'Aldosterona', 'hormonal', 'ng/dL', null, 30],
+  ['renina', 'Renina|Atividade de renina plasmática', 'hormonal', 'ng/mL/h', null, null],
+  ['androstenediona', 'Androstenediona', 'hormonal', 'ng/mL', 0.3, 3.3],
+  ['17_oh_progesterona', '17-OH-progesterona|17-hidroxiprogesterona', 'hormonal', 'ng/mL', null, null],
+  ['igf1', 'IGF-1|Somatomedina C', 'hormonal', 'ng/mL', null, null],
+  ['gh', 'GH|Hormônio do crescimento', 'hormonal', 'ng/mL', null, null],
+  ['melatonina', 'Melatonina sérica', 'hormonal', 'pg/mL', null, null],
+  ['pregnenolona', 'Pregnenolona', 'hormonal', 'ng/dL', null, null],
+  // --- metabolismo ósseo
+  ['pth', 'PTH|Paratormônio', 'osseo', 'pg/mL', 15, 65],
+  ['osteocalcina', 'Osteocalcina', 'osseo', 'ng/mL', null, null],
+  ['ctx', 'CTX|Telopeptídeo C-terminal|Beta-crosslaps', 'osseo', 'ng/mL', null, null],
+  ['fosfatase_alcalina_ossea', 'Fosfatase alcalina óssea', 'osseo', 'µg/L', null, null],
+  ['calciuria_24h', 'Calciúria 24h|Cálcio urinário 24h', 'osseo', 'mg/24h', 100, 300],
+  // --- saliva (faixas dependem do kit: usar a referência do laudo)
+  ['cortisol_salivar_manha', 'Cortisol salivar manhã|Cortisol salivar 8h|Cortisol salivar ao acordar', 'saliva', 'ng/dL', null, null],
+  ['cortisol_salivar_meio_dia', 'Cortisol salivar meio-dia|Cortisol salivar 12h', 'saliva', 'ng/dL', null, null],
+  ['cortisol_salivar_tarde', 'Cortisol salivar tarde|Cortisol salivar 16h|Cortisol salivar 17h', 'saliva', 'ng/dL', null, null],
+  ['cortisol_salivar_noite', 'Cortisol salivar noite|Cortisol salivar 23h|Cortisol salivar ao deitar', 'saliva', 'ng/dL', null, null],
+  ['dhea_salivar', 'DHEA salivar|DHEA-S salivar', 'saliva', 'pg/mL', null, null],
+  ['testosterona_salivar', 'Testosterona salivar', 'saliva', 'pg/mL', null, null],
+  ['estradiol_salivar', 'Estradiol salivar', 'saliva', 'pg/mL', null, null],
+  ['progesterona_salivar', 'Progesterona salivar', 'saliva', 'pg/mL', null, null],
+  ['melatonina_salivar', 'Melatonina salivar', 'saliva', 'pg/mL', null, null],
+  ['iga_salivar', 'IgA salivar|sIgA', 'saliva', 'µg/mL', null, null],
+  ['alfa_amilase_salivar', 'Alfa-amilase salivar', 'saliva', 'U/mL', null, null],
+  // --- urina
+  ['iodo_urinario_24h', 'Iodo urinário 24h', 'urina', 'µg/24h', null, null],
+  ['acidos_organicos_urina', 'Ácidos orgânicos urinários', 'urina', 'qualitativo', null, null],
+  ['sodio_urinario_24h', 'Sódio urinário 24h', 'urina', 'mmol/24h', 40, 220],
+  // --- outros
+  ['hbsag', 'HBsAg|Antígeno de superfície do vírus da hepatite B', 'outros', 'qualitativo', null, null],
+  ['anti_hcv', 'Anti-HCV', 'outros', 'qualitativo', null, null],
+  ['anti_hiv', 'Anti-HIV|HIV 1 e 2', 'outros', 'qualitativo', null, null],
+  ['vdrl', 'VDRL', 'outros', 'qualitativo', null, null],
+  ['psa_total', 'PSA total', 'outros', 'ng/mL', null, 4],
+  ['beta_hcg', 'Beta-HCG', 'outros', 'mUI/mL', null, 5],
 ];
 
 function seedCatalog(database: DatabaseSync): void {
@@ -486,4 +625,27 @@ function seedCatalog(database: DatabaseSync): void {
     }
     insert.run(exam, aliases, unit, system, nmin, nmax);
   }
+}
+
+export interface ReportSettingsRow { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean }
+export function reportSettings(): ReportSettingsRow {
+  return {
+    clinic_name: getSetting('report.clinic_name', ''),
+    clinic_info: getSetting('report.clinic_info', ''),
+    signature: getSetting('report.signature', ''),
+    patient_intro: getSetting('report.patient_intro', ''),
+    patient_closing: getSetting('report.patient_closing', ''),
+    technical_footer: getSetting('report.technical_footer', ''),
+    show_score: getSetting('report.show_score', '1') === '1',
+    show_systems: getSetting('report.show_systems', '1') === '1',
+    show_guidances: getSetting('report.show_guidances', '1') === '1',
+  };
+}
+
+export interface Formula { id: number; name: string; kind: 'manipulada' | 'medicamento' | 'suplemento'; composition: string; posology: string; indications: string; exams: string[]; contraindications: string; notes: string; status: Status }
+export function rowToFormula(row: Row): Formula {
+  return { id: num(row, 'id'), name: str(row, 'name'), kind: str(row, 'kind') as Formula['kind'], composition: str(row, 'composition'), posology: str(row, 'posology'), indications: str(row, 'indications'), exams: list(str(row, 'exams')), contraindications: str(row, 'contraindications'), notes: str(row, 'notes'), status: str(row, 'status') as Status };
+}
+export function allFormulas(): Formula[] {
+  return (getDb().prepare('SELECT * FROM formulas ORDER BY kind, name').all() as Row[]).map(rowToFormula);
 }

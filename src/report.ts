@@ -43,6 +43,19 @@ export interface ReportInput {
   conduct?: ConductItem[];
   doctorNotes?: string;
   authorName?: string;
+  settings?: { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean };
+}
+
+function header(input: ReportInput): string[] {
+  const s = input.settings;
+  if (!s || !s.clinic_name) return [];
+  return [`**${s.clinic_name}**${s.clinic_info ? ` · ${s.clinic_info}` : ''}`, ''];
+}
+
+function signature(input: ReportInput): string[] {
+  const s = input.settings;
+  if (!s || !s.signature || !input.conduct) return [];
+  return ['', '---', '', s.signature, ''];
 }
 
 export const CONDUCT_KIND_LABEL: Record<string, string> = {
@@ -138,6 +151,7 @@ export function buildPatientReport(input: ReportInput): string {
   const { caseInfo, evals, score, narrative } = input;
   const dates = [...new Set(evals.map((e) => e.result.collection_date).filter((d): d is string => !!d))].sort();
   const L: string[] = [];
+  L.push(...header(input));
   L.push('# Relatório dos seus exames');
   L.push('');
   L.push(`${caseInfo.patient_name ? `**Paciente:** ${caseInfo.patient_name} · ` : ''}**Coleta:** ${dates.length ? dates.join(', ') : 'não informada'} · **Emitido em:** ${input.generatedAt}`);
@@ -145,16 +159,24 @@ export function buildPatientReport(input: ReportInput): string {
   if (!input.conduct) L.push('> Minuta para revisão médica. Este documento só é válido depois de revisado e assinado pelo seu médico.');
   else L.push(`> Revisado por ${input.authorName ?? 'seu médico'}. Este relatório complementa a consulta e não substitui a avaliação clínica.`);
   L.push('');
-  L.push('## Seu score de saúde laboratorial');
-  L.push('');
-  L.push(...scoreLines(score));
-  L.push('');
-  L.push('O score resume quantos exames estão na faixa que consideramos ideal para você; 100 é o melhor resultado. Um score mais baixo não é um diagnóstico: mostra onde vale a pena olhar com mais atenção.');
-  L.push('');
+  const st = input.settings;
+  if (st?.patient_intro) {
+    L.push(st.patient_intro);
+    L.push('');
+  }
+  if (!st || st.show_score) {
+    L.push('## Seu score de saúde laboratorial');
+    L.push('');
+    L.push(...scoreLines(score));
+    L.push('');
+    L.push('O score resume quantos exames estão na faixa que consideramos ideal para você; 100 é o melhor resultado. Um score mais baixo não é um diagnóstico: mostra onde vale a pena olhar com mais atenção.');
+    L.push('');
+  }
   L.push('## Visão geral');
   L.push('');
   L.push(narrative ? narrative.resumido.visao_geral : 'Avaliamos os seus exames em conjunto com as informações do seu acompanhamento. Os resultados precisam ser interpretados junto com a sua história clínica, sintomas e tratamento atual, e isso será feito na consulta.');
   L.push('');
+  if (!st || st.show_systems) {
   L.push('## Por sistema');
   L.push('');
   if (narrative) {
@@ -174,6 +196,7 @@ export function buildPatientReport(input: ReportInput): string {
       L.push('');
     }
   }
+  }
   L.push('## Pontos favoráveis');
   L.push('');
   const good = evals.filter((e) => e.classification === 'dentro_do_alvo' || e.classification === 'qualitativo_compativel');
@@ -184,7 +207,7 @@ export function buildPatientReport(input: ReportInput): string {
   const relevant = evals.filter((e) => ['abaixo_do_alvo', 'acima_do_alvo', 'qualitativo_nao_compativel'].includes(e.classification));
   L.push(narrative ? narrative.resumido.pontos_atencao : relevant.length ? `${relevant.length} resultado(s) ficaram fora do que consideramos ideal e serão contextualizados na consulta. Uma alteração isolada não significa, por si só, um diagnóstico.` : 'Nenhum ponto de atenção identificado pelos critérios cadastrados.');
   L.push('');
-  if (input.guidances.length) {
+  if (input.guidances.length && (!st || st.show_guidances)) {
     L.push('## Orientações');
     L.push('');
     for (const g of input.guidances) L.push(`- ${g.guidance.patient_text}`);
@@ -195,6 +218,11 @@ export function buildPatientReport(input: ReportInput): string {
   L.push('');
   L.push(narrative ? narrative.resumido.mensagem_final : 'Conversaremos sobre estes resultados na consulta. Se você tiver qualquer sintoma novo ou dúvida antes disso, entre em contato com a clínica.');
   L.push('');
+  if (st?.patient_closing) {
+    L.push(st.patient_closing);
+    L.push('');
+  }
+  L.push(...signature(input));
   return L.join('\n');
 }
 
@@ -202,6 +230,7 @@ export function buildTechnicalReport(input: ReportInput): string {
   const { caseInfo, profile, evals, derived, derivedEvals, guidances, tableVersion, narrative, score } = input;
   const dates = [...new Set(evals.map((e) => e.result.collection_date).filter((d): d is string => !!d))].sort();
   const L: string[] = [];
+  L.push(...header(input));
   L.push('# Relatório técnico de exames');
   L.push('');
   L.push(input.conduct ? `> Revisado e aprovado por ${input.authorName ?? 'médico responsável'} em ${input.generatedAt}.` : '> MINUTA para revisão médica. Documento de apoio à decisão; não enviar antes da revisão e aprovação do médico responsável.');
@@ -326,6 +355,11 @@ export function buildTechnicalReport(input: ReportInput): string {
   L.push(`- Itens com validação manual: ${manual.length ? manual.map((e) => e.result.exam_raw).join(', ') : 'nenhum'}`);
   L.push(`- Redação automática: ${narrative ? `sim (${input.aiModel})` : 'não'}`);
   L.push('');
+  if (input.settings?.technical_footer) {
+    L.push(input.settings.technical_footer);
+    L.push('');
+  }
+  L.push(...signature(input));
   return L.join('\n');
 }
 

@@ -4,13 +4,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { requireAuth, requireAdmin } from '../auth.js';
-import { AiError, AI_MODEL, aiEnabled, extractFromFile, suggestConduct, writeReports, type Reports } from '../ai.js';
-import { allGuidances, allRules, audit, enabledCalcIds, getDb, list, num, numOrNull, str, strOrNull, tableVersion, UPLOAD_DIR, type Row } from '../db.js';
+import { AiError, AI_MODEL, aiEnabled, extractFromFile, suggestConduct, suggestFormulas, writeReports, type Reports } from '../ai.js';
+import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, list, num, numOrNull, reportSettings, str, strOrNull, tableVersion, UPLOAD_DIR, type Formula, type Row } from '../db.js';
 import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS, evaluateAll, evaluateResult, gaugeSvg, type Evaluation, type PatientProfile, type ResultInput } from '../engine/index.js';
 import { renderMarkdown } from '../markdown.js';
 import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, type ConductItem, type ReportInput } from '../report.js';
 import { h, layout } from '../views/html.js';
-import { analysisPage, caseFormPage, casePage, casesPage, conductPage, conferencePage, type AnalysisRow, type CaseRow, type ConductRow, type FileRow, type ResultRow } from '../views/pages.js';
+import { analysisPage, caseFormPage, caseFormulasPage, casePage, casesPage, conductPage, conferencePage, type AnalysisRow, type CaseRow, type ConductRow, type FileRow, type ResultRow } from '../views/pages.js';
 import type { Score } from '../engine/index.js';
 
 const MAX_PDF = 25 * 1024 * 1024;
@@ -491,7 +491,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     const version = tableVersion();
-    const input: ReportInput = { caseInfo: caseInfoOf(c, loadFiles(id).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: version, narrative, aiModel: narrative ? AI_MODEL : null, generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) };
+    const input: ReportInput = { caseInfo: caseInfoOf(c, loadFiles(id).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: version, narrative, aiModel: narrative ? AI_MODEL : null, generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), settings: reportSettings() };
     const technical = buildTechnicalReport(input);
     const patient = buildPatientReport(input);
     const info = getDb().prepare('INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used, ai_model, score, score_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, technical, patient, technical, version, narrative ? 1 : 0, narrative ? AI_MODEL : null, score.total, JSON.stringify(score), request.user?.id ?? null);
@@ -600,6 +600,67 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return reply.redirect(`/casos/${id}/analises/${aid}/conduta`);
   });
 
+  /* ----------------------------------------------------------- fórmulas */
+  const formulasView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => {
+    const { id, aid } = request.params as { id: string; aid: string };
+    const c = loadCase(Number(id));
+    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const analysis = loadAnalyses(Number(id)).find((a) => a.id === Number(aid));
+    if (!c || !row || !analysis) return reply.code(404).send('Análise não encontrada');
+    const formulas = allFormulas().filter((f) => f.status === 'ativo');
+    const byId = new Map(formulas.map((f) => [f.id, f]));
+    const raw = getSettingLocal(`formulas.sug.${aid}`);
+    const stored = raw ? (JSON.parse(raw) as { items: Array<{ formula_id: number; justificativa: string; ajuste: string; conduct_id: number | null }>; note: string }) : { items: [], note: '' };
+    const conduct = loadConduct(Number(aid));
+    const suggestions = stored.items.map((it) => ({ formula: byId.get(it.formula_id) ?? allFormulas().find((f) => f.id === it.formula_id) ?? ({ id: it.formula_id, name: 'item removido do banco', kind: 'manipulada', composition: '', posology: '', indications: '', exams: [], contraindications: '', notes: '', status: 'inativo' } as Formula), justificativa: it.justificativa, ajuste: it.ajuste, conductId: it.conduct_id, status: conduct.find((ci) => ci.id === it.conduct_id)?.status ?? null }));
+    return page(request, reply, 'Fórmulas', caseFormulasPage({ c, analysis, formulas, suggestions, note: stored.note || null, aiOn: aiEnabled(), error }));
+  };
+  app.get('/casos/:id/analises/:aid/formulas', async (request, reply) => formulasView(request, reply));
+
+  const addFormulaToConduct = (caseId: number, analysisId: number, f: Formula, justificativa: string, ajuste: string, status: 'sugerida' | 'aprovada'): number => {
+    const rationale = `${justificativa}\n\nComposição: ${f.composition}\nPosologia: ${f.posology}${ajuste ? `\nAjuste sugerido: ${ajuste}` : ''}${f.contraindications ? `\nContraindicações/monitorização: ${f.contraindications}` : ''}`;
+    const info = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, 'biblioteca', ?, ?)").run(caseId, analysisId, f.kind === 'suplemento' ? 'suplementacao' : 'medicamentoso', f.name, rationale, f.exams.join('|'), status, loadConduct(analysisId).length);
+    return Number(info.lastInsertRowid);
+  };
+
+  app.post('/casos/:id/analises/:aid/formulas/sugerir', async (request, reply) => {
+    const { id, aid } = request.params as { id: string; aid: string };
+    const c = loadCase(Number(id));
+    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    if (!c || !row) return reply.code(404).send('Análise não encontrada');
+    if (strOrNull(row, 'finalized_at')) return formulasView(request, reply, 'Relatório já finalizado; reabra na conduta para alterar.');
+    if (!aiEnabled()) return formulasView(request, reply, 'IA desligada.');
+    const bank = allFormulas().filter((f) => f.status === 'ativo');
+    if (!bank.length) return formulasView(request, reply, 'Seu banco não tem itens ativos; cadastre e ative em Fórmulas e medicamentos.');
+    const { evals, profile, derived, guidances, score } = evaluateCase(c, loadResults(Number(id)));
+    try {
+      const res = await suggestFormulas({ ...reportPayload(c, profile, evals, derived, guidances, score), banco: bank.map((f) => ({ formula_id: f.id, nome: f.name, tipo: f.kind, composicao: f.composition, posologia: f.posology, indicacoes: f.indications, exames: f.exams, contraindicacoes: f.contraindications })) }, Number(id));
+      const items = res.sugestoes.filter((sg) => bank.some((f) => f.id === sg.formula_id)).map((sg) => {
+        const f = bank.find((x) => x.id === sg.formula_id) as Formula;
+        return { formula_id: sg.formula_id, justificativa: sg.justificativa, ajuste: sg.ajuste, conduct_id: addFormulaToConduct(Number(id), Number(aid), f, sg.justificativa, sg.ajuste, 'sugerida') };
+      });
+      getDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`formulas.sug.${aid}`, JSON.stringify({ items, note: res.observacao.slice(0, 2000) }));
+      audit(request.user?.id ?? null, 'sugerir_formulas_ia', 'analysis', Number(aid), { items: items.length }, request.id);
+      return reply.redirect(`/casos/${id}/analises/${aid}/formulas?kind=ok&msg=${encodeURIComponent(`${items.length} sugestão(ões) do seu banco. Aprove ou rejeite cada uma.`)}`);
+    } catch (error) {
+      request.log.error({ err: error }, 'falha na sugestão de fórmulas');
+      return formulasView(request, reply, error instanceof AiError ? error.message : 'Falha inesperada na IA.');
+    }
+  });
+
+  app.post('/casos/:id/analises/:aid/formulas/:fid/adicionar', async (request, reply) => {
+    const { id, aid, fid } = request.params as { id: string; aid: string; fid: string };
+    const c = loadCase(Number(id));
+    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    if (!c || !row) return reply.code(404).send('Análise não encontrada');
+    if (strOrNull(row, 'finalized_at')) return formulasView(request, reply, 'Relatório já finalizado.');
+    const f = allFormulas().find((x) => x.id === Number(fid) && x.status === 'ativo');
+    if (!f) return formulasView(request, reply, 'Item não encontrado ou inativo.');
+    const cid = addFormulaToConduct(Number(id), Number(aid), f, 'Adicionado manualmente pelo médico.', '', 'aprovada');
+    audit(request.user?.id ?? null, 'formula_adicionada', 'conduct', cid, { formula_id: f.id }, request.id);
+    return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`${f.name} adicionado à conduta (aprovado).`)}`);
+  });
+
   app.post('/casos/:id/analises/:aid/finalizar', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
     const c = loadCase(Number(id));
@@ -618,7 +679,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const { profile, evals, derived, derivedEvals, guidances, score } = evaluateCase(c, results);
     const narrativeRaw = strOrNull(row, 'markdown_patient');
     void narrativeRaw;
-    const input: ReportInput = { caseInfo: caseInfoOf({ ...c, doctor_notes: notes }, loadFiles(Number(id)).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: str(row, 'table_version'), narrative: null, aiModel: strOrNull(row, 'ai_model'), generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), conduct: approved, doctorNotes: notes, authorName: request.user?.name ?? 'médico responsável' };
+    const input: ReportInput = { caseInfo: caseInfoOf({ ...c, doctor_notes: notes }, loadFiles(Number(id)).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: str(row, 'table_version'), narrative: null, aiModel: strOrNull(row, 'ai_model'), generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), conduct: approved, doctorNotes: notes, authorName: request.user?.name ?? 'médico responsável', settings: reportSettings() };
     // Mantém a redação já gerada: reaproveita as seções narrativas do markdown anterior quando existirem.
     const finalPatient = mergeNarrative(str(row, 'markdown_patient'), buildPatientReport(input));
     const finalTechnical = mergeNarrative(str(row, 'markdown_technical'), buildTechnicalReport(input));

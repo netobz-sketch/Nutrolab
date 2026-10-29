@@ -190,6 +190,79 @@ export async function suggestConduct(payload: unknown, caseId: number): Promise<
   }
 }
 
+/* ---------------------------------------------------------- fórmulas */
+
+export const FormulaDraftSchema = z.object({
+  nome: z.string(),
+  composicao: z.string(),
+  posologia: z.string(),
+  indicacoes: z.string(),
+  exames: z.array(z.string()),
+  contraindicacoes: z.string(),
+  observacoes: z.string(),
+});
+export type FormulaDraft = z.infer<typeof FormulaDraftSchema>;
+
+const FORMULA_SYSTEM = `Você ajuda um médico nutrólogo a montar o BANCO de fórmulas manipuladas, medicamentos e suplementos da clínica. A partir de um nome ou intenção, redija um rascunho completo para ele revisar: ele é o único responsável pelo que entra no banco e por qualquer prescrição.
+
+- "composicao": componentes com dose por unidade/dose, um por linha (ex.: "Colecalciferol 10.000 UI"); use faixas usuais da literatura e diga quando houver variação.
+- "posologia": como tomar (frequência, horário, duração sugerida), em linguagem para a receita.
+- "indicacoes": quando usar, incluindo os achados laboratoriais que motivam.
+- "exames": ids canônicos em snake_case dos exames relacionados (ex.: vitamina_d_25oh, ferritina).
+- "contraindicacoes": contraindicações, interações relevantes e exames de monitorização.
+- "observacoes": cautelas, alternativas e o que o médico deve conferir.
+Não invente marcas; não prometa efeitos; seja específico e conservador.`;
+
+export async function draftFormula(name: string, kind: string, intent: string, catalog: string[]): Promise<FormulaDraft> {
+  const anthropic = getClient();
+  try {
+    const response = await anthropic.messages.parse({
+      model: AI_MODEL,
+      max_tokens: 4000,
+      system: [{ type: 'text', text: FORMULA_SYSTEM, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: `Tipo: ${kind}\nNome/intenção: ${name}\n${intent ? `Detalhes do médico: ${intent}\n` : ''}Ids de exames disponíveis: ${catalog.join(', ')}` }],
+      output_config: { effort: 'medium', format: zodOutputFormat(FormulaDraftSchema) },
+    });
+    recordUsage(0, 'formula_rascunho', response.usage.input_tokens, response.usage.output_tokens);
+    if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou redigir esta fórmula.');
+    if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
+    return response.parsed_output;
+  } catch (error) {
+    throw translate(error);
+  }
+}
+
+export const FormulaSuggestionsSchema = z.object({
+  sugestoes: z.array(z.object({ formula_id: z.number().int(), justificativa: z.string(), ajuste: z.string() })),
+  observacao: z.string(),
+});
+export type FormulaSuggestions = z.infer<typeof FormulaSuggestionsSchema>;
+
+const FORMULA_SUGGEST_SYSTEM = `Você é assistente de um médico nutrólogo. Receberá os exames já classificados, o pré-questionário e o BANCO de fórmulas/medicamentos/suplementos do próprio médico (só itens ativos). Indique quais itens do banco se aplicam a este caso, como SUGESTÃO para o médico aprovar.
+
+- Use apenas itens do banco (pelo formula_id). Não invente fórmulas nem doses fora do que o item descreve; se couber ajuste (ex.: dose dentro da faixa do item, duração), descreva em "ajuste" deixando claro que é decisão do médico.
+- "justificativa": exame, valor e classificação que motivam, mais contraindicações do item que precisam ser checadas com os dados do paciente (medicamentos, comorbidades).
+- Não sugira item para achado dentro do alvo. Se nada do banco se aplica, devolva lista vazia e explique em "observacao".`;
+
+export async function suggestFormulas(payload: unknown, caseId: number): Promise<FormulaSuggestions> {
+  const anthropic = getClient();
+  try {
+    const response = await anthropic.messages.parse({
+      model: AI_MODEL,
+      max_tokens: 6000,
+      system: [{ type: 'text', text: FORMULA_SUGGEST_SYSTEM, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content: `Dados (JSON):\n${JSON.stringify(payload, null, 1)}` }],
+      output_config: { effort: 'high', format: zodOutputFormat(FormulaSuggestionsSchema) },
+    });
+    recordUsage(caseId, 'formulas', response.usage.input_tokens, response.usage.output_tokens);
+    if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir fórmulas para este caso.');
+    if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
+    return response.parsed_output;
+  } catch (error) {
+    throw translate(error);
+  }
+}
+
 /* ------------------------------------------------- compat. e utilidades */
 
 export const NarrativeSchema = ReportsSchema;
