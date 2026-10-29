@@ -100,7 +100,7 @@ function toInputs(results: ResultRow[]): ResultInput[] {
 function page(request: FastifyRequest, reply: FastifyReply, title: string, body: string, flash?: { kind: 'ok' | 'err' | 'warn'; text: string } | null) {
   const q = request.query as { msg?: string; kind?: string };
   const f = flash ?? (q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null);
-  return reply.type('text/html; charset=utf-8').send(layout({ title, user: request.user, body, flash: f, aiOn: aiEnabled() }));
+  return reply.type('text/html; charset=utf-8').send(layout({ title, user: request.user, body, flash: f, aiOn: aiEnabled(), active: request.url.split('/')[1]?.split('?')[0] }));
 }
 
 function redirectMsg(reply: FastifyReply, to: string, msg: string, kind: 'ok' | 'err' | 'warn' = 'ok') {

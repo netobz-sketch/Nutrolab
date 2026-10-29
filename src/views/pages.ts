@@ -1,6 +1,6 @@
 import { CALCS, CLASSIFICATIONS, CLASSIFICATION_LABEL, CONTEXTS, formatNumber } from '../engine/index.js';
 import type { Evaluation, Guidance, Rule } from '../engine/index.js';
-import { attr, fmtDate, h, option, statusTag } from './html.js';
+import { attr, fmtDate, h, icon, option, statusTag } from './html.js';
 
 export interface CaseRow {
   id: number;
@@ -24,21 +24,24 @@ export interface ResultRow { id: number; exam_raw: string; exam_canonical: strin
 export interface AnalysisRow { id: number; created_at: string; table_version: string; ai_used: boolean; ai_model: string | null }
 
 export function loginPage(error: string | null, next: string): string {
-  return `<div class="card login"><h1>Entrar</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}
+  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a>
+<h1 style="text-align:center;font-size:20px">Entrar</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}
 <form method="post" action="/login"><input type="hidden" name="next" value="${attr(next)}">
 <label>E-mail</label><input name="email" type="email" autocomplete="username" required autofocus>
 <label>Senha</label><input name="password" type="password" autocomplete="current-password" required>
-<p><button class="btn" type="submit">Entrar</button></p></form>
-<p class="muted small">Sistema de apoio à decisão clínica. Acesso restrito à equipe médica.</p></div>`;
+<p><button class="btn" type="submit" style="width:100%">Entrar</button></p></form>
+<p class="muted small" style="text-align:center;margin:0">Apoio à decisão clínica. Acesso restrito à equipe médica.</p></div>`;
 }
 
 export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean): string {
-  const rows = cases.map((c) => `<tr><td><a href="/casos/${c.id}">${h(c.patient_code)}</a></td><td>${h(c.sex ?? '—')}</td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count ?? 0}</td><td class="num">${c.analyses_count ?? 0}</td><td>${statusTag(c.status)}</td><td>${fmtDate(c.created_at)}</td></tr>`).join('');
-  return `<div class="actions" style="justify-content:space-between"><h1>Casos</h1><a class="btn" href="/casos/novo">Novo caso</a></div>
+  const rows = cases.map((c) => `<tr><td><a href="/casos/${c.id}" style="font-weight:600;text-decoration:none">${h(c.patient_code)}</a></td><td>${h(c.sex ?? '—')}</td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count ?? 0}</td><td class="num">${c.analyses_count ?? 0}</td><td>${statusTag(c.status)}</td><td class="muted">${fmtDate(c.created_at)}</td></tr>`).join('');
+  const open = cases.filter((c) => c.status === 'aberto').length;
+  const reviewed = cases.filter((c) => c.status === 'revisado').length;
+  return `<div class="pagehead"><div><div class="crumbs">NutroLab</div><h1>Casos</h1><div class="sub">Tabela clínica: ${h(tableVersion)}</div></div><a class="btn" href="/casos/novo">Novo caso</a></div>
 ${tableVersion === 'sem regras ativas' ? '<div class="flash warn">A tabela clínica não tem regras ativas: os exames serão organizados, mas nenhum resultado será classificado. Ative regras em <a href="/regras">Regras</a>.</div>' : ''}
 ${aiOn ? '' : '<div class="flash warn">IA desligada (sem ANTHROPIC_API_KEY): leitura automática de PDF e redação ficam indisponíveis; o lançamento manual e o motor de regras funcionam normalmente.</div>'}
-<div class="card">${cases.length ? `<table><thead><tr><th>Código</th><th>Sexo</th><th>Última coleta</th><th class="num">Resultados</th><th class="num">Análises</th><th>Status</th><th>Criado</th></tr></thead><tbody>${rows}</tbody></table>` : '<p class="muted">Nenhum caso ainda. Crie o primeiro.</p>'}</div>
-<p class="muted small">Versão da tabela clínica: ${h(tableVersion)}</p>`;
+<div class="kpis"><div class="kpi"><span class="k">Casos</span><span class="v">${cases.length}</span><span class="d">últimos 200</span></div><div class="kpi warn"><span class="k">Em aberto</span><span class="v">${open}</span><span class="d">aguardando revisão</span></div><div class="kpi ok"><span class="k">Revisados</span><span class="v">${reviewed}</span><span class="d">pelo médico</span></div></div>
+<div class="card flush">${cases.length ? `<div class="tablewrap"><table><thead><tr><th>Código</th><th>Sexo</th><th>Última coleta</th><th class="num">Resultados</th><th class="num">Análises</th><th>Status</th><th>Criado</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="card-body muted">Nenhum caso ainda. Crie o primeiro.</div>'}</div>`;
 }
 
 function contextChips(selected: string[], name = 'contexts'): string {
@@ -68,28 +71,42 @@ export function caseFormPage(c: CaseRow | null, error: string | null): string {
 export function casePage(opts: { c: CaseRow; files: FileRow[]; results: ResultRow[]; evals: Evaluation[]; analyses: AnalysisRow[]; aiOn: boolean; isAdmin: boolean; tableVersion: string }): string {
   const { c, files, results, evals, analyses, aiOn } = opts;
   const evalOf = (id: number) => evals.find((e) => e.result.id === id);
-  const ctx = c.contexts.map((k) => CONTEXTS[k] ?? k).join(', ') || 'nenhum';
-  const fileRows = files.map((f) => `<tr><td>${h(f.original_name)}</td><td class="num">${(f.size / 1024).toFixed(0)} KB</td><td>${fmtDate(f.created_at)}</td><td class="actions">${aiOn ? `<form method="post" action="/casos/${c.id}/arquivos/${f.id}/extrair" class="inline"><button class="btn sm" type="submit" onclick="this.disabled=true;this.textContent='Lendo...';this.form.submit()">Extrair com IA</button></form>` : '<span class="muted small">IA desligada</span>'}<form method="post" action="/casos/${c.id}/arquivos/${f.id}/excluir" class="inline" onsubmit="return confirm('Excluir o arquivo?')"><button class="btn sec sm" type="submit">Excluir</button></form></td></tr>`).join('');
+  const ctx = c.contexts.map((k) => CONTEXTS[k] ?? k).join(', ') || 'nenhum confirmado';
+  const inTarget = evals.filter((e) => e.classification === 'dentro_do_alvo' || e.classification === 'qualitativo_compativel').length;
+  const outTarget = evals.filter((e) => ['abaixo_do_alvo', 'acima_do_alvo', 'qualitativo_nao_compativel'].includes(e.classification)).length;
+  const critical = evals.filter((e) => e.critical).length;
+  const manual = evals.filter((e) => e.parsed.kind === 'unparseable' || e.result.confidence === 'baixa' || e.classification === 'regra_ambigua').length;
+  const dates = [...new Set(results.map((r) => r.collection_date).filter(Boolean))].sort();
+  const age = evals.find((e) => e.ageAtCollection !== null)?.ageAtCollection ?? null;
+  const sub = [c.sex === 'F' ? 'Feminino' : c.sex === 'M' ? 'Masculino' : 'sexo não informado', age !== null ? `${age} anos na coleta` : null, ...c.contexts.map((k) => CONTEXTS[k] ?? k), c.medications || null].filter(Boolean).join(' · ');
+  const fileRows = files.map((f) => `<div class="row"><div style="display:flex;align-items:center;gap:12px;min-width:0"><span class="fileicon">${icon('file')}</span><div style="min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><a href="/casos/${c.id}/arquivos/${f.id}" style="color:inherit;text-decoration:none">${h(f.original_name)}</a></div><div class="muted small">${(f.size / 1024).toFixed(0)} KB · enviado ${fmtDate(f.created_at)}</div></div></div><div class="actions">${aiOn ? `<form method="post" action="/casos/${c.id}/arquivos/${f.id}/extrair" class="inline"><button class="btn soft sm" type="submit" onclick="this.disabled=true;this.textContent='Lendo o PDF...';this.form.submit()">Extrair com IA</button></form>` : '<span class="muted small">IA desligada</span>'}<form method="post" action="/casos/${c.id}/arquivos/${f.id}/excluir" class="inline" onsubmit="return confirm('Excluir o arquivo?')"><button class="btn danger sm" type="submit">Excluir</button></form></div></div>`).join('');
   const resultRows = results.map((r) => {
     const ev = evalOf(r.id);
     const cls = ev ? `<span class="tag c-${ev.classification}">${h(CLASSIFICATION_LABEL[ev.classification])}</span>${ev.critical ? ` <span class="tag crit">crítico ${ev.critical}</span>` : ''}` : '';
     const notes = ev?.notes.length ? `<div class="muted small">${h(ev.notes.join('; '))}</div>` : '';
     const conv = ev?.converted ? `<div class="muted small">= ${formatNumber(ev.converted.value, 3)} ${h(ev.converted.unit)}</div>` : '';
-    return `<tr><td>${h(r.exam_raw)}<div class="muted small">${h(ev?.exam_canonical ?? r.exam_canonical ?? 'sem correspondência')}</div></td><td class="num">${h(r.value_raw)} ${h(r.unit_raw ?? '')}${conv}</td><td>${h(r.lab_reference ?? '—')}${r.lab_flag ? ` <span class="tag crit">${h(r.lab_flag)}</span>` : ''}</td><td>${cls}${notes}</td><td>${fmtDate(r.collection_date)}</td><td class="small">${h(r.source_file ?? 'manual')}${r.page ? ` p.${r.page}` : ''}<br><span class="muted">${h(r.confidence)} · ${h(r.origin)}</span></td><td><form method="post" action="/casos/${c.id}/resultados/${r.id}/excluir" class="inline"><button class="btn sec sm" type="submit">×</button></form></td></tr>`;
+    const attention = ev && (ev.parsed.kind === 'unparseable' || r.confidence === 'baixa' || ev.classification === 'regra_ambigua');
+    const target = ev?.rule ? (ev.rule.target_text ? h(ev.rule.target_text) : `${ev.rule.target_min ?? '…'}–${ev.rule.target_max ?? '…'} ${h(ev.rule.unit)}`) : '—';
+    return `<tr${attention ? ' class="attention"' : ''}><td><div style="font-weight:600">${h(r.exam_raw)}</div><div class="muted small">${h(ev?.exam_canonical ?? r.exam_canonical ?? 'sem correspondência na tabela')}</div></td><td class="num" style="font-weight:600">${h(r.value_raw)} <span class="muted small">${h(r.unit_raw ?? '')}</span>${conv}</td><td class="muted">${h(r.lab_reference ?? '—')}${r.lab_flag ? ` <span class="lab">${h(r.lab_flag)}</span>` : ''}</td><td class="muted">${target}</td><td>${cls}${notes}</td><td class="small muted">${h(r.source_file ?? 'manual')}${r.page ? `, p. ${r.page}` : ''}${r.collection_date ? ` · ${fmtDate(r.collection_date)}` : ''}<br>${h(r.origin === 'ia' ? 'IA' : 'manual')} · ${h(r.confidence)}</td><td><form method="post" action="/casos/${c.id}/resultados/${r.id}/excluir" class="inline"><button class="btn sec sm" type="submit" aria-label="Remover resultado">×</button></form></td></tr>`;
   }).join('');
-  const analysisRows = analyses.map((a) => `<tr><td><a href="/casos/${c.id}/analises/${a.id}">Análise #${a.id}</a></td><td>${fmtDate(a.created_at)}</td><td>${h(a.table_version)}</td><td>${a.ai_used ? h(a.ai_model ?? 'IA') : 'motor de regras'}</td><td><a class="btn sec sm" href="/casos/${c.id}/analises/${a.id}/download">Baixar .md</a></td></tr>`).join('');
+  const analysisRows = analyses.map((a) => `<div class="row"><div><a href="/casos/${c.id}/analises/${a.id}" style="font-weight:600;text-decoration:none">Análise #${a.id}</a><div class="muted small">${fmtDate(a.created_at)} · tabela ${h(a.table_version)} · ${a.ai_used ? `redação ${h(a.ai_model ?? 'IA')}` : 'motor de regras'}</div></div><a class="btn sec sm" href="/casos/${c.id}/analises/${a.id}/download">Baixar .md</a></div>`).join('');
   const confidenceOpts = ['alta', 'media', 'baixa'].map((v) => option(v, v, 'alta')).join('');
-  return `<div class="actions" style="justify-content:space-between"><h1>Caso ${h(c.patient_code)} ${statusTag(c.status)}</h1><div class="actions"><a class="btn sec" href="/casos/${c.id}/editar">Editar</a>${c.status === 'revisado' ? `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="aberto"><button class="btn sec" type="submit">Reabrir</button></form>` : `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="revisado"><button class="btn sec" type="submit">Marcar como revisado</button></form>`}${opts.isAdmin ? `<form method="post" action="/casos/${c.id}/excluir" class="inline" onsubmit="return confirm('Excluir o caso, os PDFs e as análises? Esta ação não pode ser desfeita.')"><button class="btn danger" type="submit">Excluir caso</button></form>` : ''}</div></div>
-<div class="card"><div class="grid"><div><b>Sexo</b><br>${h(c.sex ?? 'não informado')}</div><div><b>Nascimento</b><br>${fmtDate(c.birth_date)}</div><div><b>Contextos confirmados</b><br>${h(ctx)}</div><div><b>Medicamentos</b><br>${h(c.medications || '—')}</div><div><b>Suplementos</b><br>${h(c.supplements || '—')}</div><div><b>Comorbidades</b><br>${h(c.comorbidities || '—')}</div><div><b>Objetivo</b><br>${h(c.goal || '—')}</div></div>${c.notes ? `<p><b>Observações</b><br>${h(c.notes)}</p>` : ''}</div>
+  const statusForm = c.status === 'revisado' ? `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="aberto"><button class="btn sec" type="submit">Reabrir</button></form>` : `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="revisado"><button class="btn sec" type="submit">Marcar como revisado</button></form>`;
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / ${h(c.patient_code)}</div><h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Caso ${h(c.patient_code)} ${statusTag(c.status)}</h1><div class="sub">${h(sub)}</div></div><div class="actions"><a class="btn sec" href="/casos/${c.id}/editar">Editar</a>${statusForm}${opts.isAdmin ? `<form method="post" action="/casos/${c.id}/excluir" class="inline" onsubmit="return confirm('Excluir o caso, os PDFs e as análises? Esta ação não pode ser desfeita.')"><button class="btn danger" type="submit">Excluir caso</button></form>` : ''}</div></div>
 
-<h2>Arquivos (PDF)</h2><div class="card">
-${files.length ? `<table><thead><tr><th>Arquivo</th><th class="num">Tamanho</th><th>Enviado</th><th></th></tr></thead><tbody>${fileRows}</tbody></table>` : '<p class="muted">Nenhum PDF enviado.</p>'}
-<form method="post" action="/casos/${c.id}/arquivos" enctype="multipart/form-data" class="actions" style="margin-top:10px"><input type="file" name="pdf" accept="application/pdf" multiple required style="width:auto"><button class="btn sec" type="submit">Enviar PDF</button></form>
-<p class="muted small">Máximo 25 MB por arquivo. O PDF fica guardado neste servidor para rastreabilidade (página de origem) até o caso ser excluído.</p></div>
+<div class="kpis">
+<div class="kpi"><span class="k">Resultados lançados</span><span class="v">${results.length}</span><span class="d">${files.length} PDF${files.length === 1 ? '' : 's'}${dates.length ? ` · coleta ${dates.map((d) => fmtDate(d)).join(', ')}` : ''}</span></div>
+<div class="kpi ok"><span class="k">Dentro do alvo</span><span class="v">${inTarget}</span><span class="d">pelas regras ativas</span></div>
+<div class="kpi warn"><span class="k">Fora do alvo</span><span class="v">${outTarget}</span><span class="d">${evals.filter((e) => ['abaixo_do_alvo', 'acima_do_alvo', 'qualitativo_nao_compativel'].includes(e.classification)).map((e) => e.exam_canonical).filter(Boolean).slice(0, 3).join(', ') || 'nenhum'}</span></div>
+<div class="kpi${critical ? ' danger' : ''}"><span class="k">Crítico</span><span class="v">${critical}</span><span class="d">limites cadastrados</span></div>
+<div class="kpi${manual ? ' danger' : ''}"><span class="k">Conferência manual</span><span class="v">${manual}</span><span class="d">${manual ? 'ver linhas destacadas' : 'nada pendente'}</span></div>
+</div>
 
-<h2>Resultados</h2><div class="card">
-${results.length ? `<table><thead><tr><th>Exame</th><th class="num">Resultado</th><th>Ref. laboratório</th><th>Classificação</th><th>Coleta</th><th>Origem</th><th></th></tr></thead><tbody>${resultRows}</tbody></table>` : '<p class="muted">Nenhum resultado lançado. Envie um PDF e extraia com IA, ou lance manualmente abaixo.</p>'}
-<details style="margin-top:12px"><summary><b>Lançar resultado manualmente</b></summary>
+<div class="card"><div class="facts"><div><div class="k">Sexo biológico</div><div class="v">${h(c.sex === 'F' ? 'Feminino' : c.sex === 'M' ? 'Masculino' : 'não informado')}</div></div><div><div class="k">Nascimento</div><div class="v">${fmtDate(c.birth_date)}</div></div><div><div class="k">Contextos confirmados</div><div class="v">${h(ctx)}</div></div><div><div class="k">Medicamentos</div><div class="v">${h(c.medications || '—')}</div></div><div><div class="k">Suplementos</div><div class="v">${h(c.supplements || '—')}</div></div><div><div class="k">Comorbidades</div><div class="v">${h(c.comorbidities || '—')}</div></div><div><div class="k">Objetivo</div><div class="v">${h(c.goal || '—')}</div></div></div>${c.notes ? `<p style="margin:14px 0 0"><span class="k muted small">Observações do médico</span><br>${h(c.notes)}</p>` : ''}</div>
+
+<div class="card flush"><div class="card-head"><h2>Resultados</h2><div class="actions"><a class="btn sec sm" href="#lancar">Lançar manualmente</a>${aiOn && files.length ? `<form method="post" action="/casos/${c.id}/arquivos/${files[0]?.id}/extrair" class="inline"><button class="btn soft sm" type="submit" onclick="this.disabled=true;this.textContent='Lendo o PDF...';this.form.submit()">Extrair do PDF com IA</button></form>` : ''}</div></div>
+${results.length ? `<div class="tablewrap"><table><thead><tr><th>Exame</th><th class="num">Resultado</th><th>Ref. laboratório</th><th>Alvo cadastrado</th><th>Classificação</th><th>Origem</th><th></th></tr></thead><tbody>${resultRows}</tbody></table></div>` : '<div class="card-body muted">Nenhum resultado lançado. Envie um PDF e extraia com IA, ou lance manualmente abaixo.</div>'}
+<div class="card-body" id="lancar"><details><summary>Lançar resultado manualmente</summary>
 <form method="post" action="/casos/${c.id}/resultados"><div class="grid">
 <div><label>Exame (como no laudo)</label><input name="exam_raw" required placeholder="ex.: 25-Hidroxi Vitamina D"></div>
 <div><label>Resultado (como no laudo)</label><input name="value_raw" required placeholder="ex.: 28,4 ou <0,5 ou Não reagente"></div>
@@ -100,15 +117,29 @@ ${results.length ? `<table><thead><tr><th>Exame</th><th class="num">Resultado</t
 <div><label>Arquivo de origem</label><input name="source_file" placeholder="opcional"></div>
 <div><label>Página</label><input name="page" type="number" min="1"></div>
 <div><label>Confiança</label><select name="confidence">${confidenceOpts}</select></div>
-</div><p><button class="btn" type="submit">Lançar</button></p></form></details></div>
+</div><p><button class="btn" type="submit">Lançar</button></p></form></details></div></div>
 
-<h2>Análises</h2><div class="card">
-<form method="post" action="/casos/${c.id}/analisar" class="actions"><button class="btn" type="submit" ${results.length ? '' : 'disabled'} onclick="this.disabled=true;this.textContent='Gerando...';this.form.submit()">Gerar análise</button>${aiOn ? `<label style="display:inline;font-weight:500"><input type="checkbox" name="narrative" value="1" checked style="width:auto"> redigir síntese e minuta com IA</label>` : '<span class="muted small">Redação automática indisponível (IA desligada); o relatório sai com o motor de regras.</span>'}<span class="muted small">Tabela clínica: ${h(opts.tableVersion)}</span></form>
-${analyses.length ? `<table style="margin-top:12px"><thead><tr><th>Análise</th><th>Gerada em</th><th>Tabela clínica</th><th>Redação</th><th></th></tr></thead><tbody>${analysisRows}</tbody></table>` : ''}</div>`;
+<div class="two">
+<div class="card"><h2 style="margin-top:0">Cálculos derivados</h2>${derivedList(evals, opts)}</div>
+<div class="card"><h2 style="margin-top:0">Análises</h2>
+<form method="post" action="/casos/${c.id}/analisar" class="actions" style="margin-bottom:10px"><button class="btn" type="submit" ${results.length ? '' : 'disabled'} onclick="this.disabled=true;this.textContent='Gerando...';this.form.submit()">Gerar análise</button>${aiOn ? `<label style="display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:500;color:var(--ink)"><input type="checkbox" name="narrative" value="1" checked> redigir síntese e minuta com IA</label>` : '<span class="muted small">Redação automática indisponível (IA desligada).</span>'}</form>
+${analysisRows || '<div class="muted small">Nenhuma análise gerada ainda.</div>'}
+<div class="note" style="margin-top:12px">${icon('warn')}Minuta para revisão médica. Nada vai ao paciente sem a sua aprovação.</div></div>
+</div>
+
+<div class="card"><h2 style="margin-top:0">Arquivos (PDF)</h2>${fileRows || '<div class="muted small">Nenhum PDF enviado.</div>'}
+<form method="post" action="/casos/${c.id}/arquivos" enctype="multipart/form-data" class="actions" style="margin-top:12px"><input type="file" name="pdf" accept="application/pdf" multiple required style="width:auto"><button class="btn sec" type="submit">Enviar PDF</button><span class="muted small">Máximo 25 MB por arquivo. O PDF fica neste servidor para rastreabilidade (página de origem) até o caso ser excluído.</span></form></div>`;
+}
+
+function derivedList(evals: Evaluation[], opts: { c: CaseRow }): string {
+  void opts;
+  const derivedEvals = evals.filter((e) => e.result.derived);
+  if (!derivedEvals.length) return '<div class="muted small">Os índices (HOMA-IR, não-HDL, Friedewald, razões) aparecem no relatório quando os insumos da mesma coleta estiverem lançados e as condições forem atendidas.</div>';
+  return derivedEvals.map((e) => `<div class="row"><div><div style="font-weight:600">${h(e.result.exam_raw)}</div></div><div class="actions"><span class="num" style="font-weight:700">${h(e.result.value_raw)}</span><span class="tag c-${e.classification}">${h(CLASSIFICATION_LABEL[e.classification])}</span></div></div>`).join('');
 }
 
 export function analysisPage(caseId: number, analysisId: number, html: string): string {
-  return `<div class="actions" style="justify-content:space-between"><h1>Análise #${analysisId}</h1><div class="actions"><a class="btn sec" href="/casos/${caseId}">Voltar ao caso</a><a class="btn" href="/casos/${caseId}/analises/${analysisId}/download">Baixar .md</a></div></div><div class="card report">${html}</div>`;
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / <a href="/casos/${caseId}">caso</a> / análise</div><h1>Análise #${analysisId}</h1><div class="sub">Minuta para revisão médica</div></div><div class="actions"><a class="btn sec" href="/casos/${caseId}">Voltar ao caso</a><a class="btn" href="/casos/${caseId}/analises/${analysisId}/download">Baixar .md</a></div></div><div class="card report">${html}</div>`;
 }
 
 export function rulesPage(rules: Rule[], guidances: Guidance[]): string {
@@ -117,10 +148,10 @@ export function rulesPage(rules: Rule[], guidances: Guidance[]): string {
     const cond = [r.sex !== 'todos' ? r.sex : null, r.age_min !== null || r.age_max !== null ? `${r.age_min ?? ''}–${r.age_max ?? ''} a` : null, ...r.contexts.filter((c) => c !== 'geral')].filter(Boolean).join(' · ') || 'geral';
     return `<tr><td><a href="/regras/${r.id}">${h(r.exam_canonical)}</a><div class="muted small">${h(r.aliases.join(' | '))}</div></td><td>${h(cond)}</td><td class="num">${target} ${h(r.unit)}</td><td class="num">${r.critical_low ?? '—'} / ${r.critical_high ?? '—'}</td><td class="small">${h(r.guidance_ids.join(', ') || '—')}</td><td class="small">${h(r.clinical_source)}<div class="muted">v${h(r.version)} · ${fmtDate(r.reviewed_at)}</div></td><td>${statusTag(r.status)}</td></tr>`;
   }).join('');
-  return `<div class="actions" style="justify-content:space-between"><h1>Regras clínicas (alvos)</h1><div class="actions"><a class="btn sec" href="/regras/exportar.csv">Exportar CSV</a><form method="post" action="/regras/importar" enctype="multipart/form-data" class="actions inline"><input type="file" name="csv" accept=".csv,text/csv" required style="width:auto"><button class="btn sec" type="submit">Importar CSV</button></form><a class="btn" href="/regras/nova">Nova regra</a></div></div>
+  return `<div class="pagehead"><div><div class="crumbs">Configuração clínica</div><h1>Regras clínicas (alvos)</h1></div><div class="actions"><a class="btn sec" href="/regras/exportar.csv">Exportar CSV</a><form method="post" action="/regras/importar" enctype="multipart/form-data" class="actions inline"><input type="file" name="csv" accept=".csv,text/csv" required style="width:auto"><button class="btn sec" type="submit">Importar CSV</button></form><a class="btn" href="/regras/nova">Nova regra</a></div></div>
 <p class="muted small">O CSV usa o mesmo formato de <code>skill/references/valores-otimizados.csv</code>; cada linha importada vira uma regra nova (edite ou exclua as antigas antes se for substituir).</p>
 <p class="muted">Só regras <b>ativas</b> classificam. Linhas com fonte "EXEMPLO" são modelo de formato e não podem ser ativadas. ${guidances.length} orientações cadastradas.</p>
-<div class="card"><table><thead><tr><th>Exame / aliases</th><th>Condições</th><th class="num">Alvo</th><th class="num">Crítico inf./sup.</th><th>Orientações</th><th>Fonte</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">Nenhuma regra.</td></tr>'}</tbody></table></div>`;
+<div class="card flush"><div class="tablewrap"><table><thead><tr><th>Exame / aliases</th><th>Condições</th><th class="num">Alvo</th><th class="num">Crítico inf./sup.</th><th>Orientações</th><th>Fonte</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="7" class="muted">Nenhuma regra.</td></tr>'}</tbody></table></div></div>`;
 }
 
 export function ruleFormPage(r: Rule | null, guidances: Guidance[], error: string | null, calcIds: string[]): string {
@@ -151,9 +182,9 @@ export function ruleFormPage(r: Rule | null, guidances: Guidance[], error: strin
 
 export function guidancesPage(guidances: Guidance[]): string {
   const rows = guidances.map((g) => `<tr><td><a href="/orientacoes/${g.id}">${h(g.code)}</a><div class="muted small">${h(g.title)}</div></td><td>${h(g.exam_canonical ?? 'qualquer exame')} · ${h(g.trigger === 'critico' ? 'limite crítico' : g.trigger === 'manual' ? 'manual' : CLASSIFICATION_LABEL[g.trigger])}</td><td class="small">${h(g.patient_text.slice(0, 140))}${g.patient_text.length > 140 ? '…' : ''}</td><td>${g.requires_alert ? '<span class="tag crit">alerta</span>' : ''}</td><td class="small">${h(g.clinical_source)}<div class="muted">v${h(g.version)} · ${fmtDate(g.reviewed_at)}</div></td><td>${statusTag(g.status)}</td></tr>`).join('');
-  return `<div class="actions" style="justify-content:space-between"><h1>Orientações ao paciente</h1><a class="btn" href="/orientacoes/nova">Nova orientação</a></div>
+  return `<div class="pagehead"><div><div class="crumbs">Configuração clínica</div><h1>Orientações ao paciente</h1></div><a class="btn" href="/orientacoes/nova">Nova orientação</a></div>
 <p class="muted">Só orientações <b>ativas</b> entram na minuta, e só quando o gatilho (exame + classificação) dispara numa regra que as lista.</p>
-<div class="card"><table><thead><tr><th>Código</th><th>Gatilho</th><th>Texto ao paciente</th><th></th><th>Fonte</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">Nenhuma orientação.</td></tr>'}</tbody></table></div>`;
+<div class="card flush"><div class="tablewrap"><table><thead><tr><th>Código</th><th>Gatilho</th><th>Texto ao paciente</th><th></th><th>Fonte</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">Nenhuma orientação.</td></tr>'}</tbody></table></div></div>`;
 }
 
 export function guidanceFormPage(g: Guidance | null, error: string | null): string {
@@ -183,7 +214,7 @@ export interface UserRow { id: number; email: string; name: string; role: string
 export function settingsPage(opts: { enabled: Set<string>; users: UserRow[]; aiOn: boolean; aiModel: string; error: string | null; usage: { calls: number; input: number; output: number } }): string {
   const calcRows = CALCS.map((c) => `<tr><td><label style="display:inline;font-weight:500"><input type="checkbox" name="calc" value="${c.id}"${opts.enabled.has(c.id) ? ' checked' : ''} style="width:auto"> ${h(c.name)}</label></td><td><code>${h(c.formula)}</code></td><td>${h(c.inputs.map((i) => `${i.exam} (${i.unit})`).join(', '))}</td></tr>`).join('');
   const userRows = opts.users.map((u) => `<tr><td>${h(u.name)}</td><td>${h(u.email)}</td><td>${h(u.role)}</td><td>${u.disabled_at ? 'desativado' : 'ativo'}</td><td class="actions"><form method="post" action="/configuracoes/usuarios/${u.id}/${u.disabled_at ? 'ativar' : 'desativar'}" class="inline"><button class="btn sec sm" type="submit">${u.disabled_at ? 'Reativar' : 'Desativar'}</button></form></td></tr>`).join('');
-  return `<h1>Configurações</h1>${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
+  return `<div class="pagehead"><div><div class="crumbs">Administração</div><h1>Configurações</h1></div></div>${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
 <div class="card"><h2 style="margin-top:0">IA</h2><p>${opts.aiOn ? `Ligada · modelo <code>${h(opts.aiModel)}</code>. Uso acumulado: ${opts.usage.calls} chamadas, ${opts.usage.input.toLocaleString('pt-BR')} tokens de entrada, ${opts.usage.output.toLocaleString('pt-BR')} de saída.` : 'Desligada. Defina <code>ANTHROPIC_API_KEY</code> no ambiente do servidor para habilitar leitura de PDF e redação.'}</p><p class="muted small">A IA só extrai texto do PDF e redige; nunca classifica nem decide. A classificação é sempre do motor de regras.</p></div>
 <form method="post" action="/configuracoes/calculos" class="card"><h2 style="margin-top:0">Cálculos derivados habilitados</h2><table><thead><tr><th>Índice</th><th>Fórmula</th><th>Insumos</th></tr></thead><tbody>${calcRows}</tbody></table><p><button class="btn" type="submit">Salvar</button></p></form>
 <div class="card"><h2 style="margin-top:0">Usuários</h2><table><thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Situação</th><th></th></tr></thead><tbody>${userRows}</tbody></table>
@@ -193,5 +224,5 @@ export function settingsPage(opts: { enabled: Set<string>; users: UserRow[]; aiO
 export interface AuditRow { id: number; created_at: string; user: string; action: string; entity: string; entity_id: string | null; details: string | null }
 
 export function auditPage(rows: AuditRow[]): string {
-  return `<h1>Auditoria</h1><div class="card"><table><thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Entidade</th><th>Detalhes</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmtDate(r.created_at)}</td><td>${h(r.user)}</td><td>${h(r.action)}</td><td>${h(r.entity)} ${h(r.entity_id ?? '')}</td><td class="small muted">${h((r.details ?? '').slice(0, 200))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nada registrado.</td></tr>'}</tbody></table></div>`;
+  return `<div class="pagehead"><div><div class="crumbs">Administração</div><h1>Auditoria</h1><div class="sub">Últimos 300 eventos</div></div></div><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Entidade</th><th>Detalhes</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${fmtDate(r.created_at)}</td><td>${h(r.user)}</td><td>${h(r.action)}</td><td>${h(r.entity)} ${h(r.entity_id ?? '')}</td><td class="small muted">${h((r.details ?? '').slice(0, 200))}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">Nada registrado.</td></tr>'}</tbody></table></div></div>`;
 }

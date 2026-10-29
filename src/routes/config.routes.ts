@@ -68,7 +68,7 @@ const UserBody = z.object({ name: z.string().trim().min(1).max(80), email: z.str
 function page(request: FastifyRequest, reply: FastifyReply, title: string, body: string) {
   const q = request.query as { msg?: string; kind?: string };
   const flash = q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null;
-  return reply.type('text/html; charset=utf-8').send(layout({ title, user: request.user, body, flash, aiOn: aiEnabled() }));
+  return reply.type('text/html; charset=utf-8').send(layout({ title, user: request.user, body, flash, aiOn: aiEnabled(), active: request.url.split('/')[1]?.split('?')[0] }));
 }
 const ok = (reply: FastifyReply, to: string, msg: string) => reply.redirect(`${to}?kind=ok&msg=${encodeURIComponent(msg)}`);
 const firstIssue = (e: z.ZodError) => e.issues[0]?.message ?? 'Dados inválidos.';
