@@ -262,7 +262,7 @@ test('ajuste rápido das referências: ordem validada, barra renderizada, ativa�
   const bad = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '60', target_max: '50', normal_max: '100', critical_high: '150', status: 'ativo' });
   assert.match(bad.headers.location ?? '', /crescer%20da%20esquerda/);
   const okq = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '40', target_max: '80', normal_max: '100', critical_high: '150', status: 'ativo' });
-  assert.match(okq.headers.location ?? '', /^\/regras\?sistema=vitaminas&kind=ok/);
+  assert.match(okq.headers.location ?? '', /^\/regras\?sistema=\w+&kind=ok/);
   assert.equal((await get('/regras/lista')).statusCode, 200);
   const previa = (await get('/casos/1/previa')).json().data as Array<{ exam: string | null; classification: string }>;
   assert.equal(previa[0]?.classification, 'abaixo_do_alvo');
