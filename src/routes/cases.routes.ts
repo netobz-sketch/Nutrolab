@@ -9,6 +9,7 @@ import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, list
 import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS, evaluateAll, evaluateResult, gaugeSvg, type Evaluation, type PatientProfile, type ResultInput } from '../engine/index.js';
 import { renderMarkdown } from '../markdown.js';
 import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, type ConductItem, type ReportInput } from '../report.js';
+import { patientVisualPanel } from '../visuals.js';
 import { h, layout } from '../views/html.js';
 import { analysisPage, caseFormPage, caseFormulasPage, casePage, casesPage, conductPage, conferencePage, type AnalysisRow, type CaseRow, type ConductRow, type FileRow, type ResultRow } from '../views/pages.js';
 import type { Score } from '../engine/index.js';
@@ -506,15 +507,17 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const c = loadCase(Number(id));
     const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
-    const { evals, profile } = evaluateCase(c, loadResults(Number(id)));
+    const { evals, profile, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
     const analysis = loadAnalyses(Number(id)).find((a) => a.id === Number(aid));
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
+    const storedScore = scoreFromRow(row);
+    const panel = storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals]) : '';
     return page(request, reply, `Análise #${aid}`, analysisPage({
-      c, analysis, score: scoreFromRow(row),
-      patientHtml: renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
+      c, analysis, score: storedScore,
+      patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
       technicalHtml: renderMarkdown(str(row, 'markdown_technical') || str(row, 'markdown')),
-      finalPatientHtml: strOrNull(row, 'final_patient') ? renderMarkdown(str(row, 'final_patient')) : null,
+      finalPatientHtml: strOrNull(row, 'final_patient') ? panel + renderMarkdown(str(row, 'final_patient')) : null,
       finalTechnicalHtml: strOrNull(row, 'final_technical') ? renderMarkdown(str(row, 'final_technical')) : null,
       conductCount: loadConduct(Number(aid)).length, criticalQuery: criticalQuery(evals, profile), aiOn: aiEnabled(),
     }), q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null);
@@ -698,8 +701,12 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const md = pickMarkdown(row, tipo);
     const score = scoreFromRow(row);
     audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), { tipo }, request.id);
-    const gauge = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
-    return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: gauge + renderMarkdown(md), print: true }));
+    let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
+    if (tipo === 'resumido' && score) {
+      const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
+      top = patientVisualPanel(score, [...evals, ...derivedEvals]);
+    }
+    return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: top + renderMarkdown(md), print: true }));
   });
 
   app.get('/casos/:id/analises/:aid/download', async (request, reply) => {

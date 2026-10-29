@@ -85,13 +85,14 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', requireAuth);
 
   /* ---------------------------------------------------------------- regras */
-  app.get('/regras', async (request, reply) => page(request, reply, 'Regras', rulesPage(allRules(), allGuidances())));
+  app.get('/regras', async (request, reply) => {
+    const sys = (request.query as { sistema?: string }).sistema ?? null;
+    return page(request, reply, 'Exames e referências', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null));
+  });
+  app.get('/regras/lista', async (request, reply) => page(request, reply, 'Exames e referências', rulesPage(allRules(), allGuidances())));
   app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, allGuidances(), null, calcIds)));
 
-  app.get('/regras/rapido', async (request, reply) => {
-    const sys = (request.query as { sistema?: string }).sistema ?? null;
-    return page(request, reply, 'Ajuste rápido', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null));
-  });
+  app.get('/regras/rapido', async (request, reply) => reply.redirect(`/regras${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
 
   const QuickBody = z.object({ critical_low: numOpt, normal_min: numOpt, target_min: numOpt, target_max: numOpt, normal_max: numOpt, critical_high: numOpt, status: z.enum(['ativo', 'rascunho', 'inativo']) });
   app.post('/regras/:id/rapido', async (request, reply) => {
@@ -99,7 +100,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = getDb().prepare('SELECT * FROM rules WHERE id = ?').get(id) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');
     const parsed = QuickBody.safeParse(request.body);
-    const back = (msg: string, kind = 'err') => reply.redirect(`/regras/rapido?sistema=${encodeURIComponent(str(row, 'system'))}&kind=${kind}&msg=${encodeURIComponent(msg)}#r${id}`);
+    const back = (msg: string, kind = 'err') => reply.redirect(`/regras?sistema=${encodeURIComponent(str(row, 'system'))}&kind=${kind}&msg=${encodeURIComponent(msg)}#r${id}`);
     if (!parsed.success) return back(`${str(row, 'exam_canonical')}: ${firstIssue(parsed.error)}`);
     const d = parsed.data;
     const seq = [d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high].filter((v): v is number => v !== null);
@@ -200,7 +201,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       ruleId = Number(info.lastInsertRowid);
     }
     audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'rule', ruleId, { before: current ? rowToRule(current) : null, after: r }, request.id);
-    return ok(reply, '/regras', `Regra ${r.exam_canonical} salva (${r.status}).`);
+    return ok(reply, '/regras/lista', `Regra ${r.exam_canonical} salva (${r.status}).`);
   };
   app.get('/regras/exportar.csv', async (request, reply) => {
     audit(request.user?.id ?? null, 'exportar', 'rule', null, { count: allRules().length }, request.id);
@@ -209,11 +210,11 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/regras/importar', async (request, reply) => {
     const file = await request.file({ limits: { fileSize: 2 * 1024 * 1024 } });
-    if (!file) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Envie um arquivo CSV.'));
+    if (!file) return reply.redirect('/regras/lista?kind=err&msg=' + encodeURIComponent('Envie um arquivo CSV.'));
     const text = (await file.toBuffer()).toString('utf8').replace(/^\uFEFF/, '');
     const header = (text.split(/\r?\n/)[0] ?? '').trim();
     const legacyHeader = RULE_CSV_COLUMNS.slice(0, 17).join(',');
-    if (header !== RULE_CSV_COLUMNS.join(',') && header !== legacyHeader) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
+    if (header !== RULE_CSV_COLUMNS.join(',') && header !== legacyHeader) return reply.redirect('/regras/lista?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
     const known = new Set(allGuidances().map((g) => g.code));
     const insert = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     let imported = 0;
@@ -243,7 +244,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     });
     audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
     const msg = `${imported} regra(s) importada(s).${errors.length ? ` ${errors.length} rejeitada(s): ${errors.slice(0, 5).join(' · ')}` : ''}`;
-    return reply.redirect(`/regras?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);
+    return reply.redirect(`/regras/lista?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);
   });
 
   app.post('/regras', async (request, reply) => saveRule(request, reply, null));
@@ -254,7 +255,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send('Regra não encontrada');
     getDb().prepare('DELETE FROM rules WHERE id = ?').run(id);
     audit(request.user?.id ?? null, 'excluir', 'rule', id, { before: rowToRule(row) }, request.id);
-    return ok(reply, '/regras', 'Regra excluída.');
+    return ok(reply, '/regras/lista', 'Regra excluída.');
   });
 
   /* ----------------------------------------------------------- orientações */

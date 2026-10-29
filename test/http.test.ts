@@ -126,6 +126,8 @@ test('vincular exame sem correspondência à tabela e versão para impressão', 
   const bad = await post('/casos/1/resultados/2/vincular', { exam_canonical: 'inexistente' });
   assert.match(bad.headers.location ?? '', /Exame%20inexistente/);
   await post('/casos/1/resultados/2/vincular', { exam_canonical: '' });
+  const printP = await get('/casos/1/analises/1/imprimir?tipo=resumido');
+  assert.match(printP.body, /aria-label="Painel visual"/);
   const print = await get('/casos/1/analises/1/imprimir?tipo=tecnico');
   assert.equal(print.statusCode, 200);
   assert.match(print.body, /Imprimir \/ salvar em PDF/);
@@ -253,14 +255,15 @@ test('login profissional: nome + CPF + conselho + senha; perfil e cadastro pelo 
 });
 
 test('ajuste rápido das referências: ordem validada, barra renderizada, ativação', async () => {
-  const pageQ = await get('/regras/rapido?sistema=vitaminas');
+  const pageQ = await get('/regras?sistema=vitaminas');
   assert.equal(pageQ.statusCode, 200);
   assert.match(pageQ.body, /Crítico ↓/);
   assert.match(pageQ.body, /background:#22c55e/);
   const bad = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '60', target_max: '50', normal_max: '100', critical_high: '150', status: 'ativo' });
   assert.match(bad.headers.location ?? '', /crescer%20da%20esquerda/);
   const okq = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '40', target_max: '80', normal_max: '100', critical_high: '150', status: 'ativo' });
-  assert.match(okq.headers.location ?? '', /kind=ok/);
+  assert.match(okq.headers.location ?? '', /^\/regras\?sistema=vitaminas&kind=ok/);
+  assert.equal((await get('/regras/lista')).statusCode, 200);
   const previa = (await get('/casos/1/previa')).json().data as Array<{ exam: string | null; classification: string }>;
   assert.equal(previa[0]?.classification, 'abaixo_do_alvo');
 });
