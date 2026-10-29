@@ -1,15 +1,27 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { authenticate, consumeReset, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
+import { authenticate, authenticateProfessional, consumeReset, updateProfile, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
 import { audit, getDb, type Row } from '../db.js';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
-import { forgotPage, resetPage } from '../views/pages.js';
+import { forgotPage, profilePage, resetPage } from '../views/pages.js';
+import { normalizeText } from '../engine/index.js';
+import { COUNCILS, normalizeCouncilNumber, normalizeCpf, UFS } from '../cpf.js';
 import { layout } from '../views/html.js';
 import { loginPage } from '../views/pages.js';
 
 const PasswordBody = z.object({ current: z.string().min(1), password: z.string().min(10, 'nova senha com ao menos 10 caracteres'), confirm: z.string() }).refine((b) => b.password === b.confirm, 'a confirmação não confere');
 
 const LoginBody = z.object({ email: z.string().email(), password: z.string().min(1), next: z.string().optional() });
+const ProLoginBody = z.object({ name: z.string().trim().min(3), cpf: z.string().min(11), council_number: z.string().trim().min(2), password: z.string().min(1), next: z.string().optional() });
+const ProfileBody = z.object({
+  name: z.string().trim().min(3).max(120),
+  email: z.string().trim().email().transform((e) => e.toLowerCase()),
+  cpf: z.string().trim().default(''),
+  council: z.string().trim().default(''),
+  council_number: z.string().trim().max(20).default(''),
+  council_state: z.string().trim().default(''),
+  profession: z.string().trim().default(''),
+});
 
 function safeNext(next: string | undefined): string {
   return next && next.startsWith('/') && !next.startsWith('//') ? next : '/casos';
@@ -18,22 +30,47 @@ function safeNext(next: string | undefined): string {
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.get('/login', async (request, reply) => {
     if (request.user) return reply.redirect('/casos');
-    const q = request.query as { next?: string };
-    return reply.type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(null, safeNext(q.next)) }));
+    const q = request.query as { next?: string; modo?: string };
+    return reply.type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(null, safeNext(q.next), q.modo === 'email' ? 'email' : 'profissional') }));
   });
 
   app.post('/login', async (request, reply) => {
-    const parsed = LoginBody.safeParse(request.body);
-    const render = (msg: string, next = '/casos') => reply.code(401).type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(msg, next) }));
-    if (!parsed.success) return render('Informe e-mail e senha válidos.');
-    if (!loginAllowed(request.ip)) return render('Muitas tentativas. Aguarde 15 minutos.');
-    const user = authenticate(parsed.data.email, parsed.data.password);
-    if (!user) {
-      audit(null, 'login_falhou', 'user', parsed.data.email.toLowerCase(), { ip: request.ip }, request.id);
-      return render('E-mail ou senha incorretos.', safeNext(parsed.data.next));
+    const body = (request.body ?? {}) as Record<string, string>;
+    const mode: 'email' | 'profissional' = body.cpf !== undefined ? 'profissional' : 'email';
+    const render = (msg: string, next = '/casos', code = 401) => reply.code(code).type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(msg, next, mode) }));
+    if (!loginAllowed(request.ip)) return render('Muitas tentativas. Aguarde 15 minutos.', '/casos', 429);
+    let user = null;
+    let who = '';
+    let next: string | undefined;
+    if (mode === 'profissional') {
+      const parsed = ProLoginBody.safeParse(body);
+      if (!parsed.success) return render('Informe nome, CPF, número do conselho e senha.');
+      const cpf = normalizeCpf(parsed.data.cpf);
+      if (!cpf) return render('CPF inválido.');
+      who = cpf;
+      next = parsed.data.next;
+      user = authenticateProfessional(cpf, normalizeCouncilNumber(parsed.data.council_number), parsed.data.password);
+      if (user && normalizeText(user.name) !== normalizeText(parsed.data.name)) {
+        audit(user.id, 'login_falhou', 'user', user.id, { ip: request.ip, motivo: 'nome não confere' }, request.id);
+        user = null;
+      }
+    } else {
+      const parsed = LoginBody.safeParse(body);
+      if (!parsed.success) return render('Informe e-mail e senha válidos.');
+      who = parsed.data.email.toLowerCase();
+      next = parsed.data.next;
+      user = authenticate(parsed.data.email, parsed.data.password);
     }
+    if (!user) {
+      audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: mode }, request.id);
+      return render(mode === 'profissional' ? 'Dados não conferem. Verifique nome, CPF, número do conselho e senha.' : 'E-mail ou senha incorretos.', safeNext(next));
+    }
+    if (mode === 'email') {
+      // compatibilidade: variáveis usadas abaixo
+    }
+    const parsedNext = next;
     loginSucceeded(request.ip);
-    audit(user.id, 'login', 'user', user.id, { ip: request.ip }, request.id);
+    audit(user.id, 'login', 'user', user.id, { ip: request.ip, modo: mode }, request.id);
     reply.setCookie(COOKIE_NAME, createSessionToken(user), {
       path: '/',
       httpOnly: true,
@@ -41,7 +78,33 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       secure: process.env.NODE_ENV === 'production',
       maxAge: 12 * 3600,
     });
-    return reply.redirect(safeNext(parsed.data.next));
+    const incomplete = !user.cpf || !user.council_number;
+    return reply.redirect(incomplete && mode === 'email' ? '/perfil?kind=warn&msg=' + encodeURIComponent('Complete seu cadastro profissional (CPF e conselho) para entrar pela tela profissional.') : safeNext(parsedNext));
+  });
+
+  app.get('/perfil', { preHandler: requireAuth }, async (request, reply) => {
+    const q = request.query as { msg?: string; kind?: string };
+    const flash = q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null;
+    return reply.type('text/html; charset=utf-8').send(layout({ title: 'Meu cadastro', user: request.user, body: profilePage(request.user, null, COUNCILS, UFS), flash }));
+  });
+
+  app.post('/perfil', { preHandler: requireAuth }, async (request, reply) => {
+    const user = request.user;
+    if (!user) return reply.redirect('/login');
+    const parsed = ProfileBody.safeParse(request.body);
+    const render = (msg: string) => reply.type('text/html; charset=utf-8').send(layout({ title: 'Meu cadastro', user, body: profilePage(user, msg, COUNCILS, UFS) }));
+    if (!parsed.success) return render(parsed.error.issues[0]?.message ?? 'Dados inválidos.');
+    const d = parsed.data;
+    const cpf = d.cpf ? normalizeCpf(d.cpf) : null;
+    if (d.cpf && !cpf) return render('CPF inválido.');
+    if (d.council && !(d.council in COUNCILS)) return render('Conselho inválido.');
+    if (d.council_state && !UFS.includes(d.council_state)) return render('UF inválida.');
+    if (d.profession && d.profession !== 'medico' && d.profession !== 'nutricionista') return render('Profissão inválida.');
+    const clash = getDb().prepare('SELECT id FROM users WHERE (email = ? OR (cpf IS NOT NULL AND cpf = ?)) AND id != ?').get(d.email, cpf, user.id) as Row | undefined;
+    if (clash) return render('E-mail ou CPF já usado por outro usuário.');
+    updateProfile(user.id, { name: d.name, email: d.email, cpf, council: d.council || null, council_number: d.council_number ? normalizeCouncilNumber(d.council_number) : null, council_state: d.council_state || null, profession: d.profession || null });
+    audit(user.id, 'editar_perfil', 'user', user.id, { cpf: !!cpf, council: d.council, council_number: !!d.council_number }, request.id);
+    return reply.redirect('/perfil?kind=ok&msg=' + encodeURIComponent('Cadastro atualizado.'));
   });
 
   const passwordForm = (error: string | null, ok = false) => `<div class="card login"><h1>Alterar senha</h1>${error ? `<div class="flash err">${error}</div>` : ''}${ok ? '<div class="flash ok">Senha alterada.</div>' : ''}

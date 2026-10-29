@@ -7,6 +7,11 @@ export interface SessionUser {
   email: string;
   name: string;
   role: 'admin' | 'medico';
+  cpf: string | null;
+  council: string | null;
+  council_number: string | null;
+  council_state: string | null;
+  profession: string | null;
   /** versão da senha: muda quando a senha muda, invalidando sessões antigas */
   pwv: string;
 }
@@ -68,13 +73,36 @@ export function readSessionToken(token: string | undefined): { userId: number; p
   }
 }
 
+const USER_COLS = 'id, email, name, role, password_hash, cpf, council, council_number, council_state, profession';
+
 function rowToUser(row: Row): SessionUser {
-  return { id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'], pwv: passwordVersion(str(row, 'password_hash')) };
+  return {
+    id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'],
+    cpf: strOrNull(row, 'cpf'), council: strOrNull(row, 'council'), council_number: strOrNull(row, 'council_number'), council_state: strOrNull(row, 'council_state'), profession: strOrNull(row, 'profession'),
+    pwv: passwordVersion(str(row, 'password_hash')),
+  };
 }
 
 export function findUserById(id: number): SessionUser | null {
-  const row = getDb().prepare('SELECT id, email, name, role, password_hash FROM users WHERE id = ? AND disabled_at IS NULL').get(id) as Row | undefined;
+  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE id = ? AND disabled_at IS NULL`).get(id) as Row | undefined;
   return row ? rowToUser(row) : null;
+}
+
+/** Login profissional: CPF + número do conselho identificam; a senha autentica. */
+export function authenticateProfessional(cpf: string, councilNumber: string, password: string): SessionUser | null {
+  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE cpf = ? AND council_number = ? AND disabled_at IS NULL`).get(cpf, councilNumber) as Row | undefined;
+  if (!row) {
+    verifyPassword(password, 'scrypt:00:00');
+    return null;
+  }
+  if (!verifyPassword(password, str(row, 'password_hash'))) return null;
+  return rowToUser(row);
+}
+
+export function updateProfile(userId: number, data: { name: string; email: string; cpf: string | null; council: string | null; council_number: string | null; council_state: string | null; profession: string | null }): void {
+  getDb()
+    .prepare('UPDATE users SET name = ?, email = ?, cpf = ?, council = ?, council_number = ?, council_state = ?, profession = ? WHERE id = ?')
+    .run(data.name, data.email, data.cpf, data.council, data.council_number, data.council_state, data.profession, userId);
 }
 
 /** Usuário da sessão: só vale se a versão da senha ainda for a mesma. */
@@ -86,7 +114,7 @@ export function sessionUser(token: string | undefined): SessionUser | null {
 }
 
 export function findUserByEmail(email: string): SessionUser | null {
-  const row = getDb().prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ? AND disabled_at IS NULL').get(email.trim().toLowerCase()) as Row | undefined;
+  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase()) as Row | undefined;
   return row ? rowToUser(row) : null;
 }
 
@@ -122,7 +150,7 @@ export function consumeReset(id: number): void {
 }
 
 export function authenticate(email: string, password: string): SessionUser | null {
-  const row = getDb().prepare('SELECT id, email, name, role, password_hash FROM users WHERE email = ? AND disabled_at IS NULL').get(email.trim().toLowerCase()) as Row | undefined;
+  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase()) as Row | undefined;
   if (!row) {
     // custo constante mesmo sem usuário
     verifyPassword(password, 'scrypt:00:00');

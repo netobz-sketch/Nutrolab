@@ -42,10 +42,48 @@ export const CONTEXTS: Record<string, string> = {
   atleta: 'Atleta / treino intenso',
 };
 
+/** Sistemas/órgãos para a leitura integrada e o score por sistema. */
+export const SYSTEMS: Record<string, string> = {
+  metabolico: 'Metabolismo glicídico',
+  lipidico: 'Perfil lipídico',
+  tireoide: 'Tireoide',
+  hematologico: 'Hematologia',
+  ferro: 'Ferro e reservas',
+  vitaminas: 'Vitaminas',
+  minerais: 'Minerais e eletrólitos',
+  renal: 'Função renal',
+  hepatico: 'Função hepática',
+  inflamacao: 'Inflamação',
+  hormonal: 'Hormônios',
+  cardiovascular: 'Risco cardiovascular',
+  outros: 'Outros',
+};
+
+/** Queixas do pré-questionário (marcação). */
+export const COMPLAINTS: Record<string, string> = {
+  fadiga: 'Fadiga / cansaço',
+  sono: 'Sono ruim',
+  memoria: 'Memória / concentração',
+  libido: 'Libido baixa',
+  humor: 'Humor / ansiedade',
+  peso: 'Ganho de peso / dificuldade de perder',
+  queda_cabelo: 'Queda de cabelo',
+  unhas_pele: 'Unhas / pele',
+  intestino: 'Intestino (constipação, distensão)',
+  dor_articular: 'Dores articulares / musculares',
+  desempenho: 'Desempenho físico',
+  caibras: 'Cãibras / formigamento',
+  frio: 'Intolerância ao frio',
+  cefaleia: 'Dor de cabeça',
+};
+
 export interface Rule {
   id: number;
   exam_canonical: string;
   aliases: string[];
+  system: string;
+  normal_min: number | null;
+  normal_max: number | null;
   sex: RuleSex;
   age_min: number | null;
   age_max: number | null;
@@ -126,7 +164,24 @@ export interface Evaluation {
   candidates: Rule[];
   classification: Classification;
   critical: 'baixo' | 'alto' | null;
+  /** Faixa de normalidade: regra do médico ou referência do laudo. */
+  normal: { min: number | null; max: number | null; source: 'regra' | 'laudo' } | null;
+  normality: 'dentro' | 'abaixo' | 'acima' | null;
   notes: string[];
+}
+
+export interface ScoreItem {
+  exam: string;
+  system: string;
+  points: number;
+  reason: string;
+}
+
+export interface Score {
+  total: number | null;
+  counted: number;
+  bySystem: Array<{ system: string; label: string; score: number; n: number }>;
+  items: ScoreItem[];
 }
 
 export interface DerivedInput {

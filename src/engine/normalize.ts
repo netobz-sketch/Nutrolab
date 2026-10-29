@@ -94,3 +94,21 @@ export function roundTo(value: number, decimals: number): number {
 export function formatNumber(value: number, decimals = 2): string {
   return roundTo(value, decimals).toFixed(decimals).replace('.', ',');
 }
+
+/**
+ * Lê a referência do laboratório como texto ("30 a 100", "3,5 - 5,1", "< 200",
+ * "até 5,6", "> 40", "inferior a 150"). Devolve null quando não for inequívoca.
+ */
+export function parseReference(text: string | null | undefined): { min: number | null; max: number | null } | null {
+  if (!text) return null;
+  const t = normalizeText(text).replace(/[^\d.,<>=a-z\s-]/g, ' ').replace(/\s+/g, ' ').trim();
+  const n = (x: string) => Number(x.replace(/\.(?=\d{3}\b)/g, '').replace(',', '.'));
+  const NUM = '(-?\\d+(?:[.,]\\d+)?)';
+  let m = new RegExp(`^${NUM}\\s*(?:a|-|ate|até|–|—|to)\\s*${NUM}(?:\\s*[^\\d]*)$`).exec(t);
+  if (m && m[1] && m[2]) return { min: n(m[1]), max: n(m[2]) };
+  m = new RegExp(`^(?:<|<=|ate|até|inferior a|menor que|maximo|máximo|abaixo de)\\s*${NUM}(?:\\s*[^\\d]*)$`).exec(t);
+  if (m && m[1]) return { min: null, max: n(m[1]) };
+  m = new RegExp(`^(?:>|>=|superior a|maior que|minimo|mínimo|acima de)\\s*${NUM}(?:\\s*[^\\d]*)$`).exec(t);
+  if (m && m[1]) return { min: n(m[1]), max: null };
+  return null;
+}

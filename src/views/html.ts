@@ -194,12 +194,12 @@ export function layout(opts: { title: string; user: SessionUser | null; body: st
 <nav class="sidenav" aria-label="Principal">
 <a class="brand" href="/casos"><span class="logo">${icon('logo')}</span>NutroLab</a>
 ${item('/casos', 'casos', 'Casos', 'cases')}
-${item('/regras', 'regras', 'Regras clínicas', 'rules')}
+${item('/regras', 'regras', 'Exames e referências', 'rules')}
 ${item('/orientacoes', 'orientacoes', 'Orientações', 'guidance')}
 ${admin ? item('/configuracoes', 'configuracoes', 'Configurações', 'settings') : ''}
 ${admin ? item('/auditoria', 'auditoria', 'Auditoria', 'audit') : ''}
 <div class="foot">
-<a class="name" href="/senha" title="Alterar senha">${h(opts.user.name)}</a>
+<a class="name" href="/perfil" title="Meu cadastro">${h(opts.user.name)}</a>
 <span class="role muted">${admin ? 'Administrador' : 'Médico'} · IA ${opts.aiOn === false ? 'desligada' : 'ligada'}</span>
 <button type="button" class="theme-btn" onclick="nlToggleTheme()" aria-label="Alternar tema claro e escuro">${icon('theme')}Tema</button>
 <form method="post" action="/logout" class="inline"><button class="btn sec sm" type="submit">Sair</button></form>

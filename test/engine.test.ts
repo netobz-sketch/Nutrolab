@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ageAt,
+  computeScore,
+  parseReference,
   applicableGuidances,
   computeDerived,
   convert,
@@ -17,6 +19,9 @@ function rule(partial: Partial<Rule>): Rule {
     id: 1,
     exam_canonical: 'vitamina_d_25oh',
     aliases: ['25(OH)D', 'Vitamina D 25-OH'],
+    system: 'vitaminas',
+    normal_min: null,
+    normal_max: null,
     sex: 'todos',
     age_min: null,
     age_max: null,
@@ -210,4 +215,39 @@ test('orientação só com gatilho estruturado, status ativo e contexto permitid
   assert.equal(applicableGuidances([ev], [{ ...g, status: 'rascunho' }], profile).length, 0);
   const gest: PatientProfile = { ...profile, contexts: new Set(['gestacao']) };
   assert.equal(applicableGuidances([ev], [g], gest).length, 0);
+});
+
+test('parseReference: formas usuais do laudo', () => {
+  assert.deepEqual(parseReference('30 a 100'), { min: 30, max: 100 });
+  assert.deepEqual(parseReference('3,5 - 5,1 mmol/L'), { min: 3.5, max: 5.1 });
+  assert.deepEqual(parseReference('< 200'), { min: null, max: 200 });
+  assert.deepEqual(parseReference('até 5,6'), { min: null, max: 5.6 });
+  assert.deepEqual(parseReference('Superior a 40'), { min: 40, max: null });
+  assert.equal(parseReference('Não reagente'), null);
+});
+
+test('normalidade: da regra quando houver, senão do laudo; score pondera ótimo/normal/fora', () => {
+  const r = rule({ normal_min: 30, normal_max: 100 });
+  const dentroNormal = evaluateResult(result({ value_raw: '35' }), [r], profile);
+  assert.equal(dentroNormal.classification, 'abaixo_do_alvo');
+  assert.equal(dentroNormal.normality, 'dentro');
+  assert.equal(dentroNormal.normal?.source, 'regra');
+  const doLaudo = evaluateResult(result({ value_raw: '28,4', lab_reference: '30 a 100' }), [rule({})], profile);
+  assert.equal(doLaudo.normal?.source, 'laudo');
+  assert.equal(doLaudo.normality, 'abaixo');
+  const otimo = evaluateResult(result({ value_raw: '55' }), [r], profile);
+  const critico = evaluateResult(result({ value_raw: '8' }), [r], profile);
+  const score = computeScore([dentroNormal, doLaudo, otimo, critico]);
+  // (0,6 + 0,25 + 1 + 0) / 4 = 0,4625 → 46
+  assert.equal(score.total, 46);
+  assert.equal(score.counted, 4);
+  assert.equal(score.bySystem[0]?.system, 'vitaminas');
+  assert.equal(computeScore([evaluateResult(result({ exam_raw: 'TSH' }), [r], profile)]).total, null);
+});
+
+test('regra só com normalidade classifica pela normalidade e avisa', () => {
+  const r = rule({ target_min: null, target_max: null, normal_min: 30, normal_max: 100, critical_low: null, critical_high: null });
+  const ev = evaluateResult(result({ value_raw: '28,4' }), [r], profile);
+  assert.equal(ev.classification, 'abaixo_do_alvo');
+  assert.ok(ev.notes.some((n) => n.includes('sem alvo ótimo')));
 });

@@ -10,5 +10,6 @@ test('schemas da IA geram JSON Schema para saída estruturada (exigem zod/v4)', 
   assert.match(schema, /"results"/);
   assert.match(schema, /"confidence"/);
   const narrative = zodOutputFormat(NarrativeSchema);
-  assert.match(JSON.stringify(narrative.schema), /"visao_geral_paciente"/);
+  assert.match(JSON.stringify(narrative.schema), /"visao_geral"/);
+  assert.match(JSON.stringify(narrative.schema), /"leitura_integrada"/);
 });

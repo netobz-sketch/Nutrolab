@@ -4,18 +4,22 @@ import { createResetToken, hashPassword, requireAdmin, requireAuth, userExists }
 import { appUrl, mailEnabled } from '../mail.js';
 import { AI_MODEL, aiEnabled } from '../ai.js';
 import { allGuidances, allRules, audit, enabledCalcIds, getDb, num, parseCsv, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
-import { CALCS, CLASSIFICATIONS, CONTEXTS } from '../engine/index.js';
+import { CALCS, CLASSIFICATIONS, CONTEXTS, SYSTEMS } from '../engine/index.js';
+import { normalizeCouncilNumber, normalizeCpf } from '../cpf.js';
 import { layout } from '../views/html.js';
 import { auditPage, guidanceFormPage, guidancesPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type UserRow } from '../views/pages.js';
 
-const numOpt = z.string().trim().transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isFinite(n), 'número inválido');
-const intOpt = z.string().trim().transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isInteger(n), 'inteiro inválido');
+const numOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isFinite(n), 'número inválido');
+const intOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isInteger(n), 'inteiro inválido');
 const multi = z.union([z.string(), z.array(z.string())]).optional().transform((v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]));
 
 const RuleBody = z
   .object({
     exam_canonical: z.string().trim().regex(/^[a-z0-9_]+$/, 'exame canônico deve ser snake_case'),
     aliases: z.string().trim().default(''),
+    system: z.string().trim().default('outros'),
+    normal_min: numOpt,
+    normal_max: numOpt,
     sex: z.enum(['todos', 'M', 'F']),
     age_min: intOpt,
     age_max: intOpt,
@@ -33,7 +37,9 @@ const RuleBody = z
     status: z.enum(['ativo', 'rascunho', 'inativo']),
   })
   .superRefine((r, ctx) => {
-    if (r.target_min === null && r.target_max === null && !r.target_text) ctx.addIssue({ code: 'custom', message: 'preencha alvo mínimo, máximo ou textual' });
+    if (r.target_min === null && r.target_max === null && !r.target_text && r.normal_min === null && r.normal_max === null) ctx.addIssue({ code: 'custom', message: 'preencha o alvo ótimo, o alvo textual ou a faixa de normalidade' });
+    if (r.normal_min !== null && r.normal_max !== null && r.normal_min > r.normal_max) ctx.addIssue({ code: 'custom', message: 'normalidade mínima maior que a máxima' });
+    if (!(r.system in SYSTEMS)) ctx.addIssue({ code: 'custom', message: 'sistema inválido' });
     if (r.target_min !== null && r.target_max !== null && r.target_min > r.target_max) ctx.addIssue({ code: 'custom', message: 'alvo mínimo maior que o máximo' });
     if (r.age_min !== null && r.age_max !== null && r.age_min > r.age_max) ctx.addIssue({ code: 'custom', message: 'idade mínima maior que a máxima' });
     if (r.critical_low !== null && r.target_min !== null && r.critical_low > r.target_min) ctx.addIssue({ code: 'custom', message: 'limite crítico inferior acima do alvo mínimo' });
@@ -64,7 +70,7 @@ const GuidanceBody = z
     if (g.status === 'ativo' && /\b(mg|mcg|ui|comprimido|cápsula|gotas|dose)\b/i.test(g.patient_text)) ctx.addIssue({ code: 'custom', message: 'texto ao paciente parece conter dose/prescrição; isso exige processo explícito de validação médica e não pode ser ativado pela tela' });
   });
 
-const UserBody = z.object({ name: z.string().trim().min(1).max(80), email: z.string().trim().email().transform((e) => e.toLowerCase()), password: z.string().min(10, 'senha com ao menos 10 caracteres'), role: z.enum(['admin', 'medico']) });
+const UserBody = z.object({ name: z.string().trim().min(1).max(120), email: z.string().trim().email().transform((e) => e.toLowerCase()), password: z.string().min(10, 'senha com ao menos 10 caracteres'), role: z.enum(['admin', 'medico']), cpf: z.string().trim().default(''), council: z.string().trim().default(''), council_number: z.string().trim().default(''), council_state: z.string().trim().toUpperCase().default('') });
 
 function page(request: FastifyRequest, reply: FastifyReply, title: string, body: string) {
   const q = request.query as { msg?: string; kind?: string };
@@ -100,12 +106,12 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const contexts = r.contexts.length ? r.contexts.join('|') : 'geral';
     const dup = getDb().prepare("SELECT id FROM rules WHERE status = 'ativo' AND exam_canonical = ? AND sex = ? AND IFNULL(age_min,-1) = IFNULL(?, -1) AND IFNULL(age_max,-1) = IFNULL(?, -1) AND contexts = ? AND unit = ? AND id != IFNULL(?, -1)").get(r.exam_canonical, r.sex, r.age_min, r.age_max, contexts, r.unit, id) as Row | undefined;
     if (r.status === 'ativo' && dup) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, allGuidances(), `já existe regra ativa idêntica (#${num(dup, 'id')}); inative-a ou diferencie as condições`, calcIds));
-    const params = [r.exam_canonical, aliases, r.sex, r.age_min, r.age_max, contexts, r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, request.user?.id ?? null];
+    const params = [r.exam_canonical, aliases, r.sex, r.age_min, r.age_max, contexts, r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null];
     let ruleId = id;
     if (id) {
-      getDb().prepare("UPDATE rules SET exam_canonical=?, aliases=?, sex=?, age_min=?, age_max=?, contexts=?, unit=?, target_min=?, target_max=?, target_text=?, critical_low=?, critical_high=?, guidance_ids=?, clinical_source=?, version=?, reviewed_at=?, status=?, updated_by=?, updated_at=datetime('now') WHERE id=?").run(...params, id);
+      getDb().prepare("UPDATE rules SET exam_canonical=?, aliases=?, sex=?, age_min=?, age_max=?, contexts=?, unit=?, target_min=?, target_max=?, target_text=?, critical_low=?, critical_high=?, guidance_ids=?, clinical_source=?, version=?, reviewed_at=?, status=?, system=?, normal_min=?, normal_max=?, updated_by=?, updated_at=datetime('now') WHERE id=?").run(...params, id);
     } else {
-      const info = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params);
+      const info = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params);
       ruleId = Number(info.lastInsertRowid);
     }
     audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'rule', ruleId, { before: current ? rowToRule(current) : null, after: r }, request.id);
@@ -121,9 +127,10 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!file) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Envie um arquivo CSV.'));
     const text = (await file.toBuffer()).toString('utf8').replace(/^\uFEFF/, '');
     const header = (text.split(/\r?\n/)[0] ?? '').trim();
-    if (header !== RULE_CSV_COLUMNS.join(',')) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
+    const legacyHeader = RULE_CSV_COLUMNS.slice(0, 17).join(',');
+    if (header !== RULE_CSV_COLUMNS.join(',') && header !== legacyHeader) return reply.redirect('/regras?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
     const known = new Set(allGuidances().map((g) => g.code));
-    const insert = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    const insert = getDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     let imported = 0;
     const errors: string[] = [];
     parseCsv(text).forEach((row, i) => {
@@ -134,6 +141,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
         unit: str(row, 'unidade'), target_min: str(row, 'alvo_min'), target_max: str(row, 'alvo_max'), target_text: str(row, 'alvo_texto'),
         critical_low: str(row, 'limite_critico_inferior'), critical_high: str(row, 'limite_critico_superior'), guidance_ids: str(row, 'orientacao_id').split('|').map((c) => c.trim()).filter(Boolean),
         clinical_source: str(row, 'fonte_clinica'), version: str(row, 'versao') || '1.0', reviewed_at: str(row, 'data_revisao'), status: str(row, 'status') || 'rascunho',
+        system: str(row, 'sistema') || 'outros', normal_min: str(row, 'normal_min'), normal_max: str(row, 'normal_max'),
       });
       if (!parsed.success) {
         errors.push(`linha ${line}: ${firstIssue(parsed.error)}`);
@@ -145,7 +153,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
         errors.push(`linha ${line}: orientação inexistente ${unknown.join(', ')}`);
         return;
       }
-      insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, request.user?.id ?? null);
+      insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null);
       imported += 1;
     });
     audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
@@ -203,7 +211,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   });
 
   /* --------------------------------------------------------- configurações */
-  const loadUsers = (): UserRow[] => (getDb().prepare('SELECT id, email, name, role, created_at, disabled_at FROM users ORDER BY id').all() as Row[]).map((u) => ({ id: num(u, 'id'), email: str(u, 'email'), name: str(u, 'name'), role: str(u, 'role'), created_at: str(u, 'created_at'), disabled_at: strOrNull(u, 'disabled_at') }));
+  const loadUsers = (): UserRow[] => (getDb().prepare('SELECT id, email, name, role, created_at, disabled_at, cpf, council, council_number, council_state FROM users ORDER BY id').all() as Row[]).map((u) => ({ id: num(u, 'id'), email: str(u, 'email'), name: str(u, 'name'), role: str(u, 'role'), created_at: str(u, 'created_at'), disabled_at: strOrNull(u, 'disabled_at'), cpf: strOrNull(u, 'cpf'), council: strOrNull(u, 'council'), council_number: strOrNull(u, 'council_number'), council_state: strOrNull(u, 'council_state') }));
   const usage = () => {
     const row = getDb().prepare('SELECT COUNT(*) AS calls, IFNULL(SUM(input_tokens),0) AS i, IFNULL(SUM(output_tokens),0) AS o FROM ai_usage').get() as Row;
     return { calls: num(row, 'calls'), input: num(row, 'i'), output: num(row, 'o') };
@@ -223,7 +231,10 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) return settings(request, reply, firstIssue(parsed.error));
     const u = parsed.data;
     if (userExists(u.email)) return settings(request, reply, 'e-mail já cadastrado');
-    const info = getDb().prepare('INSERT INTO users(email, name, password_hash, role) VALUES (?, ?, ?, ?)').run(u.email, u.name, hashPassword(u.password), u.role);
+    const cpf = u.cpf ? normalizeCpf(u.cpf) : null;
+    if (u.cpf && !cpf) return settings(request, reply, 'CPF inválido');
+    if (cpf && (getDb().prepare('SELECT 1 FROM users WHERE cpf = ?').get(cpf) as Row | undefined)) return settings(request, reply, 'CPF já cadastrado');
+    const info = getDb().prepare('INSERT INTO users(email, name, password_hash, role, cpf, council, council_number, council_state, profession) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(u.email, u.name, hashPassword(u.password), u.role, cpf, u.council || null, u.council_number ? normalizeCouncilNumber(u.council_number) : null, u.council_state || null, u.council === 'CRN' ? 'nutricionista' : u.council === 'CRM' ? 'medico' : null);
     audit(request.user?.id ?? null, 'criar', 'user', Number(info.lastInsertRowid), { email: u.email, role: u.role }, request.id);
     return ok(reply, '/configuracoes', `Usuário ${u.email} criado.`);
   });

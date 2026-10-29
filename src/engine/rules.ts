@@ -1,4 +1,4 @@
-import { normalizeText, normalizeUnit, parseValue } from './normalize.js';
+import { normalizeText, normalizeUnit, parseReference, parseValue } from './normalize.js';
 import { convert } from './units.js';
 import type {
   Classification,
@@ -147,6 +147,8 @@ export function evaluateResult(result: ResultInput, rules: Rule[], profile: Pati
     candidates: [],
     classification: 'sem_alvo',
     critical: null,
+    normal: null,
+    normality: null,
     notes,
   };
   if (!exam) {
@@ -167,8 +169,13 @@ export function evaluateResult(result: ResultInput, rules: Rule[], profile: Pati
     }
     return base;
   }
-  const rule = sel.rule;
+  let rule = sel.rule;
   base.rule = rule;
+  // Regra só com faixa de normalidade (catálogo): a normalidade vira o alvo, com nota.
+  if (rule.target_min === null && rule.target_max === null && !rule.target_text && (rule.normal_min !== null || rule.normal_max !== null)) {
+    rule = { ...rule, target_min: rule.normal_min, target_max: rule.normal_max };
+    notes.push('sem alvo ótimo cadastrado: comparado com a faixa de normalidade da regra');
+  }
   if (parsed.kind === 'unparseable') {
     notes.push('revisão manual necessária');
     return { ...base, classification: 'nao_comparavel' };
@@ -202,7 +209,34 @@ export function evaluateResult(result: ResultInput, rules: Rule[], profile: Pati
   }
   const classification = classifyNumeric(parsed, value, rule);
   const critical = criticalFlag(parsed, value, rule);
-  return { ...base, classification, critical };
+  const normal = normalBand(rule, result, conv === 'same');
+  const normality = normal ? normalityOf(parsed, value, normal) : null;
+  return { ...base, classification, critical, normal, normality };
+}
+
+/** Faixa de normalidade: a do médico (na unidade da regra) ou a do laudo (só se a unidade não foi convertida). */
+export function normalBand(rule: Rule, result: ResultInput, sameUnit: boolean): Evaluation['normal'] {
+  if (rule.normal_min !== null || rule.normal_max !== null) return { min: rule.normal_min, max: rule.normal_max, source: 'regra' };
+  if (!sameUnit) return null;
+  const parsedRef = parseReference(result.lab_reference);
+  return parsedRef ? { ...parsedRef, source: 'laudo' } : null;
+}
+
+export function normalityOf(parsed: ParsedValue, value: number, band: NonNullable<Evaluation['normal']>): Evaluation['normality'] {
+  const cmp = parsed.comparator;
+  if (cmp === '<' || cmp === '<=') {
+    if (band.min !== null && value <= band.min) return 'abaixo';
+    if (band.min === null && band.max !== null && value <= band.max) return 'dentro';
+    return null;
+  }
+  if (cmp === '>' || cmp === '>=') {
+    if (band.max !== null && value >= band.max) return 'acima';
+    if (band.max === null && band.min !== null && value >= band.min) return 'dentro';
+    return null;
+  }
+  if (band.min !== null && value < band.min) return 'abaixo';
+  if (band.max !== null && value > band.max) return 'acima';
+  return 'dentro';
 }
 
 export function evaluateAll(results: ResultInput[], rules: Rule[], profile: PatientProfile): Evaluation[] {
