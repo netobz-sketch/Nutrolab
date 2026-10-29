@@ -164,10 +164,25 @@ export function icon(name: keyof typeof ICONS): string {
   return ICONS[name] ?? '';
 }
 
+const PRINT_CSS = `
+*{box-sizing:border-box}body{margin:0;background:#fff;color:#111;font:12.5pt/1.5 Georgia,"Times New Roman",serif}
+.toolbar{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid #ddd;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f6f6f6}
+.toolbar button{font:inherit;font-weight:600;padding:8px 14px;border-radius:8px;border:1px solid #333;background:#fff;cursor:pointer}
+main.report{max-width:820px;margin:0 auto;padding:32px 24px 60px}
+.report h1{font-size:20pt;margin:0 0 6px}.report h2{font-size:14pt;margin:22px 0 8px;border-bottom:1px solid #333;padding-bottom:3px}.report h3{font-size:12.5pt;margin:14px 0 4px}
+.report blockquote{margin:0 0 12px;padding:8px 12px;border-left:3px solid #999;background:#f3f3f3;font-style:italic}
+.report table{width:100%;border-collapse:collapse;font-size:9.5pt;margin:8px 0}.report th,.report td{border:1px solid #bbb;padding:4px 6px;text-align:left;vertical-align:top}.report th{background:#eee}
+.report code{font-family:Menlo,Consolas,monospace;font-size:10pt}
+@media print{.toolbar{display:none}main.report{max-width:none;padding:0}@page{margin:18mm 16mm}}
+`;
+
 const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('nl-theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t)}}catch(e){}})();
 function nlToggleTheme(){var h=document.documentElement;var cur=h.getAttribute('data-theme');var sysDark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;var eff=cur||(sysDark?'dark':'light');var next=eff==='dark'?'light':'dark';h.setAttribute('data-theme',next);try{localStorage.setItem('nl-theme',next)}catch(e){}}`;
 
-export function layout(opts: { title: string; user: SessionUser | null; body: string; flash?: { kind: 'ok' | 'err' | 'warn'; text: string } | null; aiOn?: boolean; active?: string; bare?: boolean }): string {
+export function layout(opts: { title: string; user: SessionUser | null; body: string; flash?: { kind: 'ok' | 'err' | 'warn'; text: string } | null; aiOn?: boolean; active?: string; bare?: boolean; print?: boolean }): string {
+  if (opts.print) {
+    return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(opts.title)}</title><style>${PRINT_CSS}</style></head><body><div class="toolbar"><button type="button" onclick="window.print()">Imprimir / salvar em PDF</button><a href="javascript:history.back()">Voltar</a></div><main class="report">${opts.body}</main></body></html>`;
+  }
   const head = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${h(opts.title)} · NutroLab</title><script>${THEME_SCRIPT}</script><style>${CSS}</style></head>`;
   const flash = opts.flash ? `<div class="flash ${opts.flash.kind}">${h(opts.flash.text)}</div>` : '';
   if (!opts.user || opts.bare) {

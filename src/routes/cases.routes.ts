@@ -163,7 +163,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const results = loadResults(id);
     const { evals } = evaluateCase(c, results);
     const analyses: AnalysisRow[] = (getDb().prepare('SELECT id, created_at, table_version, ai_used, ai_model FROM analyses WHERE case_id = ? ORDER BY id DESC').all(id) as Row[]).map((a) => ({ id: num(a, 'id'), created_at: str(a, 'created_at'), table_version: str(a, 'table_version'), ai_used: num(a, 'ai_used') === 1, ai_model: strOrNull(a, 'ai_model') }));
-    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: tableVersion() }));
+    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: tableVersion(), examOptions: [...new Set(allRules().map((r) => r.exam_canonical))].sort() }));
   });
 
   app.get('/casos/:id/editar', async (request, reply) => {
@@ -292,6 +292,19 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return redirectMsg(reply, `/casos/${id}`, 'Resultado lançado.');
   });
 
+  app.post('/casos/:id/resultados/:rid/vincular', async (request, reply) => {
+    const { id, rid } = request.params as { id: string; rid: string };
+    if (!loadCase(Number(id))) return reply.code(404).send('Caso não encontrado');
+    const chosen = ((request.body as { exam_canonical?: string } | null)?.exam_canonical ?? '').trim();
+    const known = new Set(allRules().map((r) => r.exam_canonical));
+    if (chosen && !known.has(chosen)) return redirectMsg(reply, `/casos/${id}`, 'Exame inexistente na tabela.', 'err');
+    const before = getDb().prepare('SELECT exam_canonical FROM results WHERE id = ? AND case_id = ?').get(Number(rid), Number(id)) as Row | undefined;
+    if (!before) return reply.code(404).send('Resultado não encontrado');
+    getDb().prepare('UPDATE results SET exam_canonical = ? WHERE id = ? AND case_id = ?').run(chosen || null, Number(rid), Number(id));
+    audit(request.user?.id ?? null, 'vincular_resultado', 'case', Number(id), { result_id: Number(rid), before: strOrNull(before, 'exam_canonical'), after: chosen || null }, request.id);
+    return redirectMsg(reply, `/casos/${id}`, chosen ? `Resultado vinculado a ${chosen}.` : 'Vínculo removido.');
+  });
+
   app.post('/casos/:id/resultados/:rid/excluir', async (request, reply) => {
     const { id, rid } = request.params as { id: string; rid: string };
     const info = getDb().prepare('DELETE FROM results WHERE id = ? AND case_id = ?').run(Number(rid), Number(id));
@@ -350,6 +363,14 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const row = getDb().prepare('SELECT * FROM analyses WHERE id = ? AND case_id = ?').get(Number(aid), Number(id)) as Row | undefined;
     if (!row || !loadCase(Number(id))) return reply.code(404).send('Análise não encontrada');
     return page(request, reply, `Análise #${aid}`, analysisPage(Number(id), Number(aid), renderMarkdown(str(row, 'markdown'))));
+  });
+
+  app.get('/casos/:id/analises/:aid/imprimir', async (request, reply) => {
+    const { id, aid } = request.params as { id: string; aid: string };
+    const row = getDb().prepare('SELECT * FROM analyses WHERE id = ? AND case_id = ?').get(Number(aid), Number(id)) as Row | undefined;
+    if (!row || !loadCase(Number(id))) return reply.code(404).send('Análise não encontrada');
+    audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), null, request.id);
+    return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid}`, user: request.user, body: renderMarkdown(str(row, 'markdown')), print: true }));
   });
 
   app.get('/casos/:id/analises/:aid/download', async (request, reply) => {

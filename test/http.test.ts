@@ -105,6 +105,23 @@ test('caso → resultados → análise → download, com classificação e nome 
   assert.doesNotMatch(dl.body, /medico@teste\.local/);
 });
 
+test('vincular exame sem correspondência à tabela e versão para impressão', async () => {
+  const before = (await get('/casos/1/previa')).json().data as Array<{ exam: string | null }>;
+  assert.equal(before[1]?.exam, 'ferritina');
+  const link = await post('/casos/1/resultados/2/vincular', { exam_canonical: 'vitamina_d_25oh' });
+  assert.equal(link.statusCode, 302);
+  const after = (await get('/casos/1/previa')).json().data as Array<{ exam: string | null; classification: string }>;
+  assert.equal(after[1]?.exam, 'vitamina_d_25oh');
+  assert.equal(after[1]?.classification, 'nao_comparavel');
+  const bad = await post('/casos/1/resultados/2/vincular', { exam_canonical: 'inexistente' });
+  assert.match(bad.headers.location ?? '', /Exame%20inexistente/);
+  await post('/casos/1/resultados/2/vincular', { exam_canonical: '' });
+  const print = await get('/casos/1/analises/1/imprimir');
+  assert.equal(print.statusCode, 200);
+  assert.match(print.body, /Imprimir \/ salvar em PDF/);
+  assert.doesNotMatch(print.body, /class="sidenav"/);
+});
+
 test('status do caso e exportação CSV', async () => {
   const st = await post('/casos/1/status', { status: 'revisado' });
   assert.equal(st.statusCode, 302);
