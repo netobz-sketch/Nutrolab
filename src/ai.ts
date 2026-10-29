@@ -166,25 +166,31 @@ Responda SOMENTE com um JSON válido no formato {"itens":[{"tipo","titulo","just
 export async function suggestConduct(payload: unknown, caseId: number): Promise<{ conduct: Conduct; searches: number }> {
   const anthropic = getClient();
   try {
-    const response = await anthropic.messages.create({
+    // Passo 1: pesquisa + rascunho em texto livre (com ferramenta de busca).
+    const research = await anthropic.messages.create({
       model: AI_MODEL,
-      max_tokens: 10000,
-      system: [{ type: 'text', text: CONDUCT_SYSTEM, cache_control: { type: 'ephemeral' } }],
+      max_tokens: 8000,
+      system: [{ type: 'text', text: CONDUCT_SYSTEM.replace(/Responda SOMENTE com um JSON[^]*$/, 'Escreva o resultado em texto corrido e organizado: primeiro um parágrafo "Pesquisa" (o que encontrou e o que não encontrou, com as URLs), depois uma lista numerada de sugestões, cada uma com tipo, título, justificativa com exame e valor, exames relacionados (ids canônicos) e fontes (URLs).'), cache_control: { type: 'ephemeral' } }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
       messages: [{ role: 'user', content: `Dados do caso (JSON):\n${JSON.stringify(payload, null, 1)}` }],
       output_config: { effort: 'high' },
     });
-    recordUsage(caseId, 'conduta', response.usage.input_tokens, response.usage.output_tokens);
-    if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir conduta para este caso.');
-    const searches = response.content.filter((b) => b.type === 'server_tool_use' && b.name === 'web_search').length;
-    const text = response.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n').trim();
-    const json = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    const start = json.indexOf('{');
-    const end = json.lastIndexOf('}');
-    if (start < 0 || end < 0) throw new AiError('A IA não devolveu a lista de sugestões no formato esperado.');
-    const parsed = ConductSchema.safeParse(JSON.parse(json.slice(start, end + 1)));
-    if (!parsed.success) throw new AiError('A lista de sugestões veio incompleta; tente de novo.');
-    return { conduct: parsed.data, searches };
+    recordUsage(caseId, 'conduta_pesquisa', research.usage.input_tokens, research.usage.output_tokens);
+    if (research.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir conduta para este caso.');
+    const searches = research.content.filter((b) => b.type === 'server_tool_use' && b.name === 'web_search').length;
+    const draft = research.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n').trim();
+    if (!draft) throw new AiError('A IA não produziu o rascunho de conduta.');
+    // Passo 2: estruturação com saída tipada (sem ferramentas): nunca vem inválida.
+    const structured = await anthropic.messages.parse({
+      model: AI_MODEL,
+      max_tokens: 8000,
+      system: 'Converta o rascunho de conduta abaixo, sem acrescentar nem remover sugestões, para o formato estruturado. "tipo" deve ser um de: suplementacao, estilo_de_vida, seguimento, exame, encaminhamento, medicamentoso, outro. "exames" são ids canônicos em snake_case. "fontes" são as URLs citadas (vazio se nenhuma). "pesquisa_openevidence" é o parágrafo de pesquisa.',
+      messages: [{ role: 'user', content: draft }],
+      output_config: { effort: 'low', format: zodOutputFormat(ConductSchema) },
+    });
+    recordUsage(caseId, 'conduta_estrutura', structured.usage.input_tokens, structured.usage.output_tokens);
+    if (!structured.parsed_output) throw new AiError('A lista de sugestões não pôde ser estruturada; tente de novo.');
+    return { conduct: structured.parsed_output, searches };
   } catch (error) {
     throw translate(error);
   }
