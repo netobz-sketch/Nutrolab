@@ -199,9 +199,9 @@ export function layout(opts: { title: string; user: SessionUser | null; body: st
 <nav class="sidenav" aria-label="Principal">
 <a class="brand" href="/casos"><span class="logo">${icon('logo')}</span>NutroLab</a>
 ${item('/casos', 'casos', 'Casos', 'cases')}
-${item('/regras', 'regras', 'Exames e referências', 'rules')}
+${item('/regras', 'regras', 'Referências dos exames', 'rules')}
 ${item('/orientacoes', 'orientacoes', 'Orientações', 'guidance')}
-${item('/formulas', 'formulas', 'Fórmulas e medicamentos', 'pill')}
+${item('/formulas', 'formulas', 'Fórmulas', 'pill')}
 ${item('/relatorios', 'relatorios', 'Relatórios', 'report')}
 <a class="item" href="https://www.openevidence.com/" target="_blank" rel="noopener">${icon('external')}<span>OpenEvidence</span></a>
 ${admin ? item('/configuracoes', 'configuracoes', 'Configurações', 'settings') : ''}

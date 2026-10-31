@@ -236,6 +236,13 @@ function mergeNarrative(draft: string, rebuilt: string): string {
   return out;
 }
 
+/** Cabeçalho com logo e nome da clínica (tela e impressão). */
+function brandHeader(): string {
+  const st = reportSettings();
+  if (!st.logo && !st.clinic_name) return '';
+  return `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid #e5e7eb;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${st.logo ? `<img src="/branding/logo?v=${h(st.logo)}" alt="" style="max-height:64px;max-width:220px">` : ''}<div><div style="font-weight:700;font-size:16px">${h(st.clinic_name)}</div>${st.clinic_info ? `<div style="font-size:12.5px;color:#6b7280">${h(st.clinic_info)}</div>` : ''}</div></div>`;
+}
+
 const ConductItemBody = z.object({ kind: z.string().trim().default('outro'), title: z.string().trim().min(1).max(200), rationale: z.string().trim().max(3000).default(''), action: z.string().trim().default('salvar') });
 
 export async function casesRoutes(app: FastifyInstance): Promise<void> {
@@ -512,7 +519,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
-    const panel = storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals]) : '';
+    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals]) : '');
     return page(request, reply, `Análise #${aid}`, analysisPage({
       c, analysis, score: storedScore,
       patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
@@ -706,6 +713,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
       top = patientVisualPanel(score, [...evals, ...derivedEvals]);
     }
+    top = brandHeader() + top;
     return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: top + renderMarkdown(md), print: true }));
   });
 

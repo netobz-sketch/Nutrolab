@@ -2,12 +2,16 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { createResetToken, hashPassword, requireAdmin, requireAuth, userExists } from '../auth.js';
 import { appUrl, mailEnabled } from '../mail.js';
-import { AI_MODEL, aiEnabled, AiError, draftFormula } from '../ai.js';
-import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, num, numOrNull, parseCsv, reportSettings, rowToFormula, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
+import { AI_MODEL, aiEnabled, AiError, draftFormula, extractFormulary } from '../ai.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { docxText } from '../docx.js';
+import { allFormulas, allGuidances, allRules, audit, BRAND_DIR, enabledCalcIds, FORMULARY_DIR, getDb, num, numOrNull, parseCsv, reportSettings, rowToFormula, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
 import { CALCS, CLASSIFICATIONS, CONTEXTS, SYSTEMS } from '../engine/index.js';
 import { normalizeCouncilNumber, normalizeCpf } from '../cpf.js';
 import { layout } from '../views/html.js';
-import { auditPage, formulaFormPage, formulasPage, guidanceFormPage, guidancesPage, quickRulesPage, reportsPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type ReportListRow, type UserRow } from '../views/pages.js';
+import { auditPage, formulaFormPage, formulasPage, guidanceFormPage, guidancesPage, quickRulesPage, reportsPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type FormularyFileRow, type ReportListRow, type UserRow } from '../views/pages.js';
 
 const numOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isFinite(n), 'número inválido');
 const intOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isInteger(n), 'inteiro inválido');
@@ -86,8 +90,9 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
 
   /* ---------------------------------------------------------------- regras */
   app.get('/regras', async (request, reply) => {
-    const sys = (request.query as { sistema?: string }).sistema ?? null;
-    return page(request, reply, 'Exames e referências', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null));
+    const q = request.query as { sistema?: string; q?: string };
+    const sys = q.sistema ?? null;
+    return page(request, reply, 'Referências dos exames', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null, (q.q ?? '').slice(0, 60)));
   });
   app.get('/regras/lista', async (request, reply) => page(request, reply, 'Exames e referências', rulesPage(allRules(), allGuidances())));
   app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, allGuidances(), null, calcIds)));
@@ -114,7 +119,62 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
 
   /* -------------------------------------------------------------- fórmulas */
   const FormulaBody = z.object({ name: z.string().trim().min(2).max(160), kind: z.enum(['manipulada', 'medicamento', 'suplemento']), composition: z.string().trim().max(4000).default(''), posology: z.string().trim().max(2000).default(''), indications: z.string().trim().max(3000).default(''), exams: z.string().trim().max(500).default(''), contraindications: z.string().trim().max(3000).default(''), notes: z.string().trim().max(3000).default(''), status: z.enum(['ativo', 'rascunho', 'inativo']) });
-  app.get('/formulas', async (request, reply) => page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), null)));
+  const loadFormularyFiles = (): FormularyFileRow[] => (getDb().prepare('SELECT * FROM formula_files ORDER BY id DESC').all() as Row[]).map((r) => ({ id: num(r, 'id'), original_name: str(r, 'original_name'), mime: str(r, 'mime'), size: num(r, 'size'), extracted_count: numOrNull(r, 'extracted_count'), created_at: str(r, 'created_at') }));
+  const formulasView = (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => page(request, reply, 'Fórmulas', formulasPage(allFormulas(), aiEnabled(), error, loadFormularyFiles()));
+  app.get('/formulas', async (request, reply) => formulasView(request, reply));
+
+  app.post('/formulas/arquivos', async (request, reply) => {
+    let saved = 0;
+    let rejected = 0;
+    for await (const part of request.files({ limits: { fileSize: 25 * 1024 * 1024, files: 10 } })) {
+      const buf = await part.toBuffer();
+      const isPdf = buf.subarray(0, 5).toString('latin1') === '%PDF-';
+      const isZip = buf.length > 4 && buf.readUInt32LE(0) === 0x04034b50 && /\.docx$/i.test(part.filename ?? '');
+      if (part.file.truncated || (!isPdf && !isZip)) {
+        rejected += 1;
+        continue;
+      }
+      const mime = isPdf ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      const stored = `${crypto.randomUUID()}.${isPdf ? 'pdf' : 'docx'}`;
+      fs.writeFileSync(path.join(FORMULARY_DIR, stored), buf);
+      getDb().prepare('INSERT INTO formula_files(original_name, stored_name, mime, size, created_by) VALUES (?, ?, ?, ?, ?)').run(path.basename(part.filename || 'formulario').slice(0, 120), stored, mime, buf.length, request.user?.id ?? null);
+      saved += 1;
+    }
+    audit(request.user?.id ?? null, 'upload_formulario', 'formula_file', null, { saved, rejected }, request.id);
+    return reply.redirect(`/formulas?kind=${rejected ? 'warn' : 'ok'}&msg=${encodeURIComponent(`${saved} arquivo(s) anexado(s).${rejected ? ` ${rejected} rejeitado(s): só .docx e .pdf até 25 MB.` : ' Agora clique em "Gerar fórmulas com IA".'}`)}`);
+  });
+
+  app.post('/formulas/arquivos/:id/extrair', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getDb().prepare('SELECT * FROM formula_files WHERE id = ?').get(id) as Row | undefined;
+    if (!row) return reply.code(404).send('Arquivo não encontrado');
+    if (!aiEnabled()) return formulasView(request, reply, 'IA desligada.');
+    try {
+      const buf = fs.readFileSync(path.join(FORMULARY_DIR, str(row, 'stored_name')));
+      const catalog = [...new Set(allRules().map((r) => r.exam_canonical))];
+      const source = str(row, 'mime') === 'application/pdf' ? ({ kind: 'pdf', data: buf } as const) : ({ kind: 'text', text: docxText(buf) } as const);
+      if (source.kind === 'text' && source.text.length < 20) return formulasView(request, reply, 'O documento Word parece vazio ou sem texto legível.');
+      const result = await extractFormulary(source, catalog);
+      const insert = getDb().prepare("INSERT INTO formulas(name, kind, composition, posology, indications, exams, contraindications, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'rascunho', ?)");
+      for (const f of result.formulas) insert.run(f.nome.slice(0, 160), f.tipo, f.composicao.slice(0, 4000), f.posologia.slice(0, 2000), f.indicacoes.slice(0, 3000), f.exames.filter((x) => catalog.includes(x)).join('|'), f.contraindicacoes.slice(0, 3000), [`Origem: ${str(row, 'original_name')}`, f.observacoes].filter(Boolean).join(' · ').slice(0, 3000), request.user?.id ?? null);
+      getDb().prepare('UPDATE formula_files SET extracted_count = ? WHERE id = ?').run(result.formulas.length, id);
+      audit(request.user?.id ?? null, 'extrair_formulario_ia', 'formula_file', id, { items: result.formulas.length, obs: result.observacoes.slice(0, 300) }, request.id);
+      return reply.redirect(`/formulas?kind=ok&msg=${encodeURIComponent(`${result.formulas.length} item(ns) criados em rascunho a partir de ${str(row, 'original_name')}. Revise e ative.${result.observacoes ? ` Observações: ${result.observacoes.slice(0, 200)}` : ''}`)}`);
+    } catch (error) {
+      request.log.error({ err: error }, 'falha na leitura do formulário');
+      return formulasView(request, reply, error instanceof AiError ? error.message : error instanceof Error && /docx/.test(error.message) ? error.message : 'Falha inesperada ao ler o arquivo.');
+    }
+  });
+
+  app.post('/formulas/arquivos/:id/excluir', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    const row = getDb().prepare('SELECT * FROM formula_files WHERE id = ?').get(id) as Row | undefined;
+    if (!row) return reply.code(404).send('Arquivo não encontrado');
+    fs.rmSync(path.join(FORMULARY_DIR, str(row, 'stored_name')), { force: true });
+    getDb().prepare('DELETE FROM formula_files WHERE id = ?').run(id);
+    audit(request.user?.id ?? null, 'excluir_formulario', 'formula_file', id, { file: str(row, 'original_name') }, request.id);
+    return ok(reply, '/formulas', 'Arquivo removido.');
+  });
   app.get('/formulas/nova', async (request, reply) => page(request, reply, 'Novo item', formulaFormPage(null, null)));
   app.get('/formulas/:id', async (request, reply) => {
     const row = getDb().prepare('SELECT * FROM formulas WHERE id = ?').get(Number((request.params as { id: string }).id)) as Row | undefined;
@@ -132,7 +192,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       return page(request, reply, 'Rascunho', formulaFormPage({ name: draft.nome || name, kind: kind as 'manipulada', composition: draft.composicao, posology: draft.posologia, indications: draft.indicacoes, exams: draft.exames, contraindications: draft.contraindicacoes, notes: draft.observacoes, status: 'rascunho' }, null, true));
     } catch (error) {
       request.log.error({ err: error }, 'falha no rascunho de fórmula');
-      return page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), error instanceof AiError ? error.message : 'Falha inesperada na IA.'));
+      return formulasView(request, reply, error instanceof AiError ? error.message : 'Falha inesperada na IA.');
     }
   });
   const saveFormula = async (request: FastifyRequest, reply: FastifyReply, id: number | null) => {
@@ -164,6 +224,27 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   const reportsList = (): ReportListRow[] => (getDb().prepare('SELECT a.id AS analysis_id, a.case_id, a.score, a.created_at, a.finalized_at, a.ai_used, c.patient_code, c.patient_name FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.deleted_at IS NULL ORDER BY a.id DESC LIMIT 200').all() as Row[]).map((r) => ({ analysis_id: num(r, 'analysis_id'), case_id: num(r, 'case_id'), patient_code: str(r, 'patient_code'), patient_name: str(r, 'patient_name'), score: numOrNull(r, 'score'), created_at: str(r, 'created_at'), finalized_at: strOrNull(r, 'finalized_at'), ai_used: num(r, 'ai_used') === 1 }));
   app.get('/relatorios', async (request, reply) => page(request, reply, 'Relatórios', reportsPage(reportsList(), reportSettings(), null, request.user?.role === 'admin')));
   const ReportCfg = z.object({ clinic_name: z.string().trim().max(120).default(''), clinic_info: z.string().trim().max(300).default(''), signature: z.string().trim().max(200).default(''), patient_intro: z.string().trim().max(2000).default(''), patient_closing: z.string().trim().max(2000).default(''), technical_footer: z.string().trim().max(2000).default(''), show_score: z.string().optional(), show_systems: z.string().optional(), show_guidances: z.string().optional() });
+  app.post('/relatorios/logo', { preHandler: requireAdmin }, async (request, reply) => {
+    const file = await request.file({ limits: { fileSize: 2 * 1024 * 1024 } });
+    if (!file) return reply.redirect('/relatorios?kind=err&msg=' + encodeURIComponent('Envie uma imagem.'));
+    const buf = await file.toBuffer();
+    const kind = buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? 'png' : buf[0] === 0xff && buf[1] === 0xd8 ? 'jpg' : buf.subarray(0, 4).toString('latin1') === 'RIFF' ? 'webp' : /^\s*(<\?xml|<svg)/i.test(buf.subarray(0, 200).toString('utf8')) ? 'svg' : null;
+    if (!kind || file.file.truncated) return reply.redirect('/relatorios?kind=err&msg=' + encodeURIComponent('Formato não aceito ou arquivo acima de 2 MB (PNG, JPG, SVG, WebP).'));
+    for (const f of fs.readdirSync(BRAND_DIR)) if (f.startsWith('logo.')) fs.rmSync(path.join(BRAND_DIR, f), { force: true });
+    fs.writeFileSync(path.join(BRAND_DIR, `logo.${kind}`), buf);
+    setSetting('report.logo', `${kind}-${Date.now()}`);
+    audit(request.user?.id ?? null, 'logo', 'settings', 'relatorios', { kind, size: buf.length }, request.id);
+    return ok(reply, '/relatorios', 'Logo atualizada.');
+  });
+
+  app.get('/branding/logo', async (_request, reply) => {
+    const f = fs.readdirSync(BRAND_DIR).find((x) => x.startsWith('logo.'));
+    if (!f) return reply.code(404).send('sem logo');
+    const ext = f.split('.').pop();
+    const type = ext === 'png' ? 'image/png' : ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/svg+xml';
+    return reply.type(type).header('Cache-Control', 'private, max-age=86400').send(fs.readFileSync(path.join(BRAND_DIR, f)));
+  });
+
   app.post('/relatorios/config', { preHandler: requireAdmin }, async (request, reply) => {
     const parsed = ReportCfg.safeParse(request.body);
     if (!parsed.success) return page(request, reply, 'Relatórios', reportsPage(reportsList(), reportSettings(), firstIssue(parsed.error), true));

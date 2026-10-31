@@ -269,6 +269,43 @@ export async function suggestFormulas(payload: unknown, caseId: number): Promise
   }
 }
 
+export const FormularyExtractSchema = z.object({
+  formulas: z.array(FormulaDraftSchema.extend({ tipo: z.enum(['manipulada', 'medicamento', 'suplemento']) })),
+  observacoes: z.string(),
+});
+export type FormularyExtract = z.infer<typeof FormularyExtractSchema>;
+
+const FORMULARY_SYSTEM = `Você recebe um documento do próprio médico (formulário de fórmulas manipuladas, lista de medicamentos ou suplementos, receitas-modelo). Extraia CADA item como uma fórmula do banco, fiel ao documento:
+- "nome" curto; "tipo": manipulada (composição com vários ativos ou dose personalizada), medicamento (industrializado) ou suplemento.
+- "composicao": componentes e doses exatamente como no documento, um por linha. Não invente doses: se faltar, escreva "(dose não informada no documento)".
+- "posologia", "indicacoes", "contraindicacoes": só o que o documento disser; vazio quando não houver. "exames": ids canônicos do catálogo fornecido que se relacionem claramente.
+- "observacoes" do item: trechos ambíguos ou ilegíveis. Em "observacoes" gerais: o que não foi possível extrair.
+Não acrescente itens que não estejam no documento.`;
+
+export async function extractFormulary(source: { kind: 'pdf'; data: Buffer } | { kind: 'text'; text: string }, catalog: string[]): Promise<FormularyExtract> {
+  const anthropic = getClient();
+  const intro = `Ids de exames do catálogo: ${catalog.join(', ')}\n\nExtraia todas as fórmulas, medicamentos e suplementos do documento.`;
+  const content: Anthropic.ContentBlockParam[] = source.kind === 'pdf'
+    ? [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: source.data.toString('base64') } }, { type: 'text', text: intro }]
+    : [{ type: 'text', text: `${intro}\n\n=== DOCUMENTO ===\n${source.text.slice(0, 150000)}` }];
+  try {
+    const response = await anthropic.messages.parse({
+      model: AI_MODEL,
+      max_tokens: 16000,
+      system: [{ type: 'text', text: FORMULARY_SYSTEM, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content }],
+      output_config: { effort: 'high', format: zodOutputFormat(FormularyExtractSchema) },
+    });
+    recordUsage(0, 'formulario_extracao', response.usage.input_tokens, response.usage.output_tokens);
+    if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou ler este documento.');
+    if (response.stop_reason === 'max_tokens') throw new AiError('Documento grande demais para uma leitura; divida o arquivo.');
+    if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
+    return response.parsed_output;
+  } catch (error) {
+    throw translate(error);
+  }
+}
+
 /* ------------------------------------------------- compat. e utilidades */
 
 export const NarrativeSchema = ReportsSchema;

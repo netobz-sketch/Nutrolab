@@ -6,6 +6,8 @@ import { CALCS } from './engine/derived.js';
 
 export const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+export const BRAND_DIR = path.join(DATA_DIR, 'branding');
+export const FORMULARY_DIR = path.join(DATA_DIR, 'formularios');
 export const DB_PATH = path.join(DATA_DIR, 'nutrolab.sqlite');
 
 export type Row = Record<string, unknown>;
@@ -216,6 +218,16 @@ CREATE TABLE IF NOT EXISTS conduct_items (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_conduct_case ON conduct_items(case_id);
+CREATE TABLE IF NOT EXISTS formula_files (
+  id INTEGER PRIMARY KEY,
+  original_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  extracted_count INTEGER,
+  created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS formulas (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,
@@ -250,6 +262,8 @@ export function getDb(): DatabaseSync {
 
 export function openDb(): DatabaseSync {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  fs.mkdirSync(BRAND_DIR, { recursive: true });
+  fs.mkdirSync(FORMULARY_DIR, { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
@@ -627,7 +641,7 @@ function seedCatalog(database: DatabaseSync): void {
   }
 }
 
-export interface ReportSettingsRow { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean }
+export interface ReportSettingsRow { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean; logo: string }
 export function reportSettings(): ReportSettingsRow {
   return {
     clinic_name: getSetting('report.clinic_name', ''),
@@ -639,6 +653,7 @@ export function reportSettings(): ReportSettingsRow {
     show_score: getSetting('report.show_score', '1') === '1',
     show_systems: getSetting('report.show_systems', '1') === '1',
     show_guidances: getSetting('report.show_guidances', '1') === '1',
+    logo: getSetting('report.logo', ''),
   };
 }
 

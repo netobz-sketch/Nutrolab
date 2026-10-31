@@ -13,6 +13,7 @@ process.env.NODE_ENV = 'test';
 delete process.env.ANTHROPIC_API_KEY;
 
 const { buildApp } = await import('../src/app.js');
+const { fakeDocx } = await import('./docx.test.js');
 const app = await buildApp();
 const H = { host: 'localhost', origin: 'http://localhost' };
 let cookie = '';
@@ -305,4 +306,33 @@ test('banco de fórmulas: cadastro, ativação e inclusão na conduta do caso', 
   const dlP = await get('/casos/1/analises/2/download?tipo=resumido');
   assert.match(dlP.body, /Vitamina D3 10\.000 UI \+ K2/);
   assert.doesNotMatch(dlP.body, /Hipercalcemia/);
+});
+
+function multipart(fields: Array<{ name: string; filename: string; type: string; data: Buffer }>): { body: Buffer; type: string } {
+  const boundary = '----nutrolabtest';
+  const parts = fields.map((f) => Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${f.name}"; filename="${f.filename}"\r\nContent-Type: ${f.type}\r\n\r\n`), f.data, Buffer.from('\r\n')]));
+  return { body: Buffer.concat([...parts, Buffer.from(`--${boundary}--\r\n`)]), type: `multipart/form-data; boundary=${boundary}` };
+}
+
+test('fórmulas: anexo de formulário .docx aceito, .txt rejeitado; logo da clínica enviada e servida', async () => {
+  const docx = fakeDocx('<w:document><w:body><w:p><w:r><w:t>Vitamina D3 10.000 UI</w:t></w:r></w:p></w:body></w:document>');
+  const m = multipart([{ name: 'arquivo', filename: 'formulario.docx', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', data: docx }, { name: 'arquivo', filename: 'nota.txt', type: 'text/plain', data: Buffer.from('texto') }]);
+  const up = await app.inject({ method: 'POST', url: '/formulas/arquivos', headers: { ...H, cookie, 'content-type': m.type }, payload: m.body });
+  assert.equal(up.statusCode, 302);
+  assert.match(decodeURIComponent(up.headers.location ?? ''), /1 arquivo\(s\) anexado\(s\)\. 1 rejeitado/);
+  const pageF = await get('/formulas');
+  assert.match(pageF.body, /formulario\.docx/);
+  assert.match(pageF.body, /ainda não lido/);
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7a1a4000000004945e44ae426082', 'hex');
+  const lm = multipart([{ name: 'logo', filename: 'logo.png', type: 'image/png', data: png }]);
+  const logo = await app.inject({ method: 'POST', url: '/relatorios/logo', headers: { ...H, cookie, 'content-type': lm.type }, payload: lm.body });
+  assert.equal(logo.statusCode, 302);
+  const served = await get('/branding/logo');
+  assert.equal(served.statusCode, 200);
+  assert.equal(served.headers['content-type'], 'image/png');
+  const rel = await get('/relatorios');
+  assert.match(rel.body, /\/branding\/logo\?v=png-/);
+  const print = await get('/casos/1/analises/2/imprimir?tipo=resumido');
+  assert.match(print.body, /\/branding\/logo/);
+  assert.match(print.body, /Clínica Teste/);
 });
