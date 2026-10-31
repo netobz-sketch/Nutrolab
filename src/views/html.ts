@@ -101,6 +101,8 @@ input[type=checkbox]{width:auto;min-height:0}
 textarea{min-height:90px}
 .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
 .grid.wide{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.bands6{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+@media (max-width:720px){.bands6{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));margin-bottom:16px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;gap:3px}
 .kpi .k{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.02em}

@@ -1,67 +1,82 @@
 # NutroLab
 
-Sistema web para análise de exames laboratoriais em nutrologia: o médico cadastra
-**alvos clínicos** e **orientações aprovadas**; o sistema lê os PDFs (IA, opcional),
-classifica cada resultado por um **motor de regras determinístico** e gera uma
-**minuta** de análise técnica + orientações ao paciente, sempre para revisão médica.
+Sistema web para análise de exames em nutrologia. O médico cadastra **exames e referências**
+(normalidade, alvo ótimo, limites críticos), **orientações** e um **banco de fórmulas e
+medicamentos**; o sistema lê os laudos (PDF ou foto, com IA), exige **conferência**, classifica
+cada resultado por um **motor de regras determinístico**, gera **relatório resumido (paciente) e
+técnico (médicos)** com **score 0–100** e leitura por sistema, e conduz a etapa de **conduta**
+(IA sugere, médico aprova) até o **relatório final em PDF**.
 
-Nasceu da skill `skill/` (SKILL.md + referências), que continua no repositório como
-especificação do comportamento.
+Em produção: https://nutrolab.srv2086528.hstgr.cloud · Código: github.com/netobz-sketch/Nutrolab
 
-## Princípios (não negociáveis)
+## Princípios
 
-- **A IA nunca classifica nem decide.** Ela só transcreve o PDF e redige texto a partir
-  de uma tabela já classificada. Sem `ANTHROPIC_API_KEY` ela desliga e tudo o mais funciona.
-- **Nenhuma faixa clínica embutida.** Só regras `ativo` classificam. Linhas com fonte
-  "EXEMPLO" são modelo de formato e o sistema recusa ativá-las.
-- **Orientação ao paciente só com gatilho estruturado** (exame + classificação), nunca texto improvisado.
-- **Rastreabilidade**: cada resultado guarda arquivo, página, data e confiança; cada
-  análise guarda versão da tabela, regras e orientações usadas; tudo auditado.
-- **Privacidade**: código de paciente pseudonimizado; a IA é instruída a não transcrever
-  nome/CPF; PDFs ficam no volume do servidor e somem ao excluir o caso.
+- **A IA nunca classifica nem pontua.** Ela transcreve laudos, redige texto e sugere conduta;
+  o score e as classificações vêm só das regras do médico. Sem `ANTHROPIC_API_KEY` ela desliga.
+- **Nada chega ao paciente sem aprovação.** Conduta, fórmulas e observações entram no relatório
+  final só depois de aprovadas na tela.
+- **Só regras ativas valem.** O catálogo de 159 exames nasce em rascunho; o médico define o
+  ótimo e ativa. Linhas de exemplo não podem ser ativadas.
+- **Rastreabilidade e auditoria** de cada resultado (arquivo, página, data, confiança) e de cada
+  escrita (quem, quando, antes/depois).
+
+## Fluxo (5 etapas)
+
+1. **Pré-questionário**: identificação, sexo, nascimento, menopausa, contextos, comorbidades,
+   medicamentos, suplementos, queixas, observações para a IA.
+2. **Anexos**: PDF, JPG, PNG ou WebP; extração por IA por arquivo.
+3. **Conferência**: cada exame editável; "OK em todos"; excluir da análise; vincular exame.
+4. **Relatório + score**: resumido e técnico, painel visual (velocímetro geral, por sistema,
+   barra por exame), impressão/PDF e `.md`.
+5. **Conduta**: sugestões da IA (busca na literatura) e do banco de fórmulas; aprovar/rejeitar/
+   editar; observações ao paciente; relatório final. Botão para o OpenEvidence com a pergunta pronta.
+
+## Telas
+
+| Menu | O que faz |
+|---|---|
+| Casos | lista e fluxo do caso |
+| Exames e referências | barras coloridas com 6 faixas por exame (crítico/normal/ótimo), tabela completa e CSV |
+| Orientações | textos ao paciente com gatilho (exame + classificação) |
+| Fórmulas e medicamentos | banco do médico; rascunho por IA; sugestão por caso |
+| Relatórios | todos os relatórios gerados; cabeçalho, assinatura, textos padrão, seções |
+| OpenEvidence | link externo |
+| Configurações (admin) | cálculos derivados, usuários (CPF, conselho), links de redefinição de senha |
+| Auditoria (admin) | últimos eventos |
+
+Acesso: tela profissional (nome, CPF, número do conselho, senha) ou e-mail e senha. Recuperação:
+link gerado pelo administrador, e-mail (se SMTP configurado) ou `node dist/scripts/reset-password.js`.
+
+## Score
+
+Por resultado comparável: dentro do ótimo 1,0 · fora do ótimo e dentro do normal 0,6 · fora do
+normal 0,25 · além de limite crítico 0. Score = média × 100, geral e por sistema. Normalidade:
+a da regra ou, se vazia, a lida da referência do laudo.
 
 ## Estrutura
 
 ```
-src/engine/     motor puro: normalize, units, rules, derived (testado)
-src/ai.ts       Anthropic: extração do PDF e redação (saída estruturada)
-src/report.ts   relatório Markdown determinístico (assets/modelo-relatorio.md)
-src/routes/     auth, casos, regras/orientações/configurações/auditoria
-src/views/      HTML renderizado no servidor
-scripts/        backup do SQLite
-seed/           regras de exemplo (rascunho) importadas no primeiro boot
-skill/          a skill original (especificação)
-deploy/         compose/Caddy/script da VPS
+src/engine/   motor puro: normalize, units, rules, derived, score (testado)
+src/ai.ts     Anthropic: extração (PDF/imagem), relatórios, conduta (2 passos), fórmulas
+src/report.ts relatórios resumido e técnico (Markdown)   src/visuals.ts painel visual
+src/routes/   auth, casos, config (exames, orientações, fórmulas, relatórios, usuários)
+src/views/    HTML renderizado no servidor (tema claro/escuro)
+scripts/      backup do SQLite, reset de senha
+seed/ skill/  regras de exemplo e a skill original      deploy/  compose, Caddy, script da VPS
 ```
 
-Stack: Node 22, TypeScript strict, Fastify 5, SQLite nativo (`node:sqlite`), Zod, `@anthropic-ai/sdk`.
+Stack: Node 22, TypeScript strict, Fastify 5, SQLite nativo, Zod 4, `@anthropic-ai/sdk`, nodemailer.
 
-## Rodar local
+## Rodar local e testar
 
 ```bash
-npm install
-cp .env.example .env        # ADMIN_EMAIL/ADMIN_PASSWORD criam o 1º admin
-npm run build && npm start  # http://localhost:8090
-npm test                    # motor de regras
+npm install && cp .env.example .env     # ADMIN_EMAIL/ADMIN_PASSWORD criam o 1º admin
+npm run build && npm start               # http://localhost:8090
+npm test                                 # motor + integração HTTP (33 testes)
 ```
 
-## Deploy (VPS da clínica)
+## Deploy
 
-```bash
-NUTROLAB_ADMIN_EMAIL=voce@exemplo.com NUTROLAB_ADMIN_PASSWORD='senha-forte' ./deploy/deploy-vps.sh
-```
-
-Primeira execução acrescenta o serviço ao `docker-compose.yml`, o host ao `Caddyfile`
-e as variáveis ao `.env` da VPS (host padrão `nutrolab.<vps>.hstgr.cloud`, nome que a Hostinger já
-aponta para a VPS; para um domínio próprio, troque `NUTROLAB_HOST` e recrie o Caddy); as seguintes só reconstroem a imagem. Para ligar a IA,
-preencha `ANTHROPIC_API_KEY` no `.env` da VPS e `docker compose up -d nutrolab`.
-
-Backup: `npm run backup` dentro do contêiner (cron diário configurado no deploy),
-arquivos em `/srv/clinica/nutrolab-data/backups/`, retenção 14 dias.
-
-## Fluxo de uso
-
-1. **Regras**: cadastre alvos (exame, sexo, idade, contexto, unidade, alvo, limites críticos, fonte). Ative só o revisado.
-2. **Orientações**: textos ao paciente com gatilho (exame + classificação). Ative só o aprovado.
-3. **Caso**: código, sexo, nascimento, contextos confirmados; envie PDFs e extraia com IA ou lance à mão.
-4. **Gerar análise**: relatório com classificação, cálculos derivados, evolução, minuta e nota de auditoria. Baixe o `.md`.
+`./deploy/deploy-vps.sh` (rsync + build na VPS + up). Variáveis no `.env` da VPS:
+`NUTROLAB_HOST`, `NUTROLAB_SESSION_SECRET`, `ANTHROPIC_API_KEY`, `SMTP_*` (opcional).
+Backup diário 03h15 em `/srv/clinica/nutrolab-data/backups/`, retenção 14 dias.
