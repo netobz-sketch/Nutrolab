@@ -516,9 +516,9 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return page(request, reply, `Análise #${aid}`, analysisPage({
       c, analysis, score: storedScore,
       patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
-      technicalHtml: renderMarkdown(str(row, 'markdown_technical') || str(row, 'markdown')),
+      technicalHtml: panel + renderMarkdown(str(row, 'markdown_technical') || str(row, 'markdown')),
       finalPatientHtml: strOrNull(row, 'final_patient') ? panel + renderMarkdown(str(row, 'final_patient')) : null,
-      finalTechnicalHtml: strOrNull(row, 'final_technical') ? renderMarkdown(str(row, 'final_technical')) : null,
+      finalTechnicalHtml: strOrNull(row, 'final_technical') ? panel + renderMarkdown(str(row, 'final_technical')) : null,
       conductCount: loadConduct(Number(aid)).length, criticalQuery: criticalQuery(evals, profile), aiOn: aiEnabled(),
     }), q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null);
   });
@@ -702,7 +702,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const score = scoreFromRow(row);
     audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), { tipo }, request.id);
     let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
-    if (tipo === 'resumido' && score) {
+    if (score) {
       const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
       top = patientVisualPanel(score, [...evals, ...derivedEvals]);
     }

@@ -132,6 +132,7 @@ test('vincular exame sem correspondência à tabela e versão para impressão', 
   assert.equal(print.statusCode, 200);
   assert.match(print.body, /Imprimir \/ salvar em PDF/);
   assert.match(print.body, /<svg role="img" aria-label="Score/);
+  assert.match(print.body, /aria-label="Painel visual"/);
   assert.doesNotMatch(print.body, /class="sidenav"/);
 });
 
