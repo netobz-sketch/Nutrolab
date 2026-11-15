@@ -8,6 +8,7 @@ import { openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { casesRoutes } from './routes/cases.routes.js';
 import { configRoutes } from './routes/config.routes.js';
+import { integrationRoutes } from './integration.js';
 
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -29,7 +30,10 @@ app.decorateRequest('user', null);
 
 app.addHook('onRequest', async (request, reply) => {
   const hostname = request.hostname.split(':')[0] ?? '';
-  if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(hostname) && request.url !== '/health') {
+  // A API de integração chega pela rede interna do Docker (host nutrolab:8090) e é
+  // protegida por token (src/integration.ts); o token substitui a checagem de host.
+  const integration = request.url.startsWith('/api/integration/');
+  if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(hostname) && request.url !== '/health' && !integration) {
     return reply.code(421).send('host não permitido');
   }
   if (request.method === 'POST') {
@@ -57,6 +61,7 @@ app.get('/health', async () => ({ status: 'ok', ai: aiEnabled() ? AI_MODEL : 'of
 await app.register(authRoutes);
 await app.register(casesRoutes);
 await app.register(configRoutes);
+await app.register(integrationRoutes, { prefix: '/api/integration' });
 
 app.setNotFoundHandler(async (_request, reply) => reply.code(404).type('text/html; charset=utf-8').send('<p>Página não encontrada. <a href="/casos">Voltar</a></p>'));
 app.setErrorHandler(async (error: unknown, request, reply) => {

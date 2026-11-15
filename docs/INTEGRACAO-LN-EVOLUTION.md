@@ -9,6 +9,11 @@ LN Evolution, pela rede interna do Docker (`http://nutrolab:8090`).
 O NutroLab continua pseudônimo: `cases.patient_code` recebe o **UUID do paciente no LN Evolution**.
 Casos antigos com outro código podem ser ligados informando esse código no LN Evolution.
 
+## Nome do paciente
+`cases.patient_name` existe no NutroLab e aparece nos relatórios. A integração **nunca o devolve**: o DTO não tem o campo e
+`redactPatientName()` substitui o nome nos dois Markdowns pelo código. A ligação entre os sistemas é só o `patient_code`.
+`markers.classification` é recalculada com as regras ATIVAS do NutroLab no momento da consulta (o score por sistema é o congelado).
+
 ## Autenticação
 - Header `X-Integration-Token: <token>`; token em `INTEGRATION_TOKEN` (env). Comparação em tempo constante.
 - Sem `INTEGRATION_TOKEN` configurado, as rotas respondem 404 (integração desligada).

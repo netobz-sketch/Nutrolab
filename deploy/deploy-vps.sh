@@ -2,6 +2,9 @@
 # Deploy do NutroLab na VPS (host ssh "vps-clinica", stack em /srv/clinica).
 # 1ª execução: acrescenta serviço ao compose, bloco ao Caddyfile e variáveis ao .env.
 # Execuções seguintes: só reconstrói a imagem e reinicia o serviço.
+# Sempre (idempotente): garante NUTROLAB_INTEGRATION_TOKEN no .env, INTEGRATION_TOKEN
+# no serviço e o bloqueio público de /api/integration/* no Caddyfile (API do LN Evolution
+# só pela rede interna do Docker); recarrega o Caddy se o Caddyfile mudou.
 set -euo pipefail
 HOST_SSH="${HOST_SSH:-vps-clinica}"
 STACK=/srv/clinica
@@ -50,10 +53,43 @@ PY
 fi
 # variáveis de shell venceriam o .env na interpolação do compose; a partir daqui só o .env manda
 unset NUTROLAB_ADMIN_EMAIL NUTROLAB_ADMIN_NAME NUTROLAB_ADMIN_PASSWORD
+echo "== integração LN Evolution (idempotente) =="
+if ! grep -q '^NUTROLAB_INTEGRATION_TOKEN=' .env; then
+  echo "NUTROLAB_INTEGRATION_TOKEN=\"$(openssl rand -hex 32)\"" >> .env
+  echo "token de integração gerado no .env"
+fi
+CADDY_BEFORE=$(md5sum Caddyfile | cut -d' ' -f1)
+python3 - <<'PY'
+import shutil, time
+ts=time.strftime('%Y%m%d%H%M')
+p='docker-compose.yml'; s=open(p).read()
+line='      INTEGRATION_TOKEN: ${NUTROLAB_INTEGRATION_TOKEN:-}\n'
+anchor='      APP_URL: https://${NUTROLAB_HOST}\n'
+if line not in s and anchor in s:
+    shutil.copy(p, f'{p}.bak-{ts}')
+    s=s.replace(anchor, anchor+line, 1)
+    open(p,'w').write(s)
+    print('compose: INTEGRATION_TOKEN acrescentado ao serviço nutrolab')
+c='Caddyfile'; t=open(c).read()
+start=t.find('{$NUTROLAB_HOST} {')
+if start!=-1 and '@integ path /api/integration/*' not in t:
+    rp=t.find('\treverse_proxy nutrolab:8090', start)
+    if rp!=-1:
+        shutil.copy(c, f'{c}.bak-{ts}')
+        t=t[:rp]+'\t@integ path /api/integration/*\n\trespond @integ 404\n'+t[rp:]
+        open(c,'w').write(t)
+        print('Caddyfile: /api/integration/* bloqueado no host público')
+PY
+docker compose config -q
+CADDY_AFTER=$(md5sum Caddyfile | cut -d' ' -f1)
 echo "== build =="
 docker build -q -t nutrolab:local build/nutrolab
 echo "== subir =="
 docker compose up -d nutrolab
+if [[ "$CADDY_BEFORE" != "$CADDY_AFTER" ]]; then
+  echo "== Caddyfile mudou: recarregando o Caddy =="
+  docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+fi
 if ! docker compose exec caddy printenv NUTROLAB_HOST >/dev/null 2>&1; then
   echo "== caddy sem NUTROLAB_HOST: recriando (alguns segundos sem proxy) =="
   docker compose up -d --force-recreate caddy

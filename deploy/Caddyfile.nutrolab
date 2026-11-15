@@ -3,5 +3,8 @@
 {$NUTROLAB_HOST} {
 	import security
 	encode zstd gzip
+	# API de integração (LN Evolution) só pela rede interna do Docker: nunca pela internet.
+	@integ path /api/integration/*
+	respond @integ 404
 	reverse_proxy nutrolab:8090
 }

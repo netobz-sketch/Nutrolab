@@ -63,14 +63,14 @@ function toComplaints(v: string | string[] | undefined): string[] {
   return arr.filter((c) => c in COMPLAINTS);
 }
 /** Contextos efetivos: os marcados + o derivado da menopausa. */
-function effectiveContexts(contexts: string[], menopause: string): string[] {
+export function effectiveContexts(contexts: string[], menopause: string): string[] {
   const set = new Set(contexts);
   if (menopause === 'pos') set.add('pos_menopausa');
   if (menopause === 'nao') set.add('pre_menopausa');
   return [...set];
 }
 
-function rowToCase(row: Row): CaseRow {
+export function rowToCase(row: Row): CaseRow {
   return {
     id: num(row, 'id'),
     patient_code: str(row, 'patient_code'),
@@ -95,12 +95,12 @@ function rowToCase(row: Row): CaseRow {
   };
 }
 
-function loadCase(id: number): CaseRow | null {
+export function loadCase(id: number): CaseRow | null {
   const row = getDb().prepare('SELECT * FROM cases WHERE id = ? AND deleted_at IS NULL').get(id) as Row | undefined;
   return row ? rowToCase(row) : null;
 }
 
-function loadResults(caseId: number): ResultRow[] {
+export function loadResults(caseId: number): ResultRow[] {
   return (getDb().prepare('SELECT * FROM results WHERE case_id = ? ORDER BY collection_date, id').all(caseId) as Row[]).map((r) => ({
     id: num(r, 'id'),
     exam_raw: str(r, 'exam_raw'),
@@ -123,11 +123,11 @@ function loadFiles(caseId: number): FileRow[] {
   return (getDb().prepare('SELECT * FROM case_files WHERE case_id = ? ORDER BY id').all(caseId) as Row[]).map((r) => ({ id: num(r, 'id'), original_name: str(r, 'original_name'), size: num(r, 'size'), created_at: str(r, 'created_at'), mime: str(r, 'mime') || 'application/pdf' }));
 }
 
-function profileOf(c: CaseRow): PatientProfile {
+export function profileOf(c: CaseRow): PatientProfile {
   return { sex: c.sex === 'M' || c.sex === 'F' ? c.sex : null, birthDate: c.birth_date, contexts: new Set(effectiveContexts(c.contexts, c.menopause)) };
 }
 
-function toInputs(results: ResultRow[]): ResultInput[] {
+export function toInputs(results: ResultRow[]): ResultInput[] {
   return results.map((r) => ({ ...r, confidence: r.confidence as ResultInput['confidence'], derived: false }));
 }
 

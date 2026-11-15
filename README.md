@@ -75,8 +75,19 @@ npm run build && npm start               # http://localhost:8090
 npm test                                 # motor + integração HTTP (33 testes)
 ```
 
+## Integração com o LN Evolution
+
+API servidor a servidor em `/api/integration/*` (contrato em `docs/INTEGRACAO-LN-EVOLUTION.md`):
+casos por paciente, análise com score por sistema, marcadores e destaques, séries de marcadores
+e criação de caso já preenchido. Exige o header `X-Integration-Token` igual a `INTEGRATION_TOKEN`
+(comparação em tempo constante, 120 req/min); sem a variável, as rotas respondem 404. O prefixo é
+isento de `ALLOWED_HOSTS` porque chega pela rede interna do Docker (`http://nutrolab:8090`), e o
+Caddy público bloqueia `/api/integration/*` para o token nunca ser aceito pela internet. Cada
+chamada vai para a auditoria com ação `integ_*`; nenhuma rota devolve nome de paciente.
+
 ## Deploy
 
 `./deploy/deploy-vps.sh` (rsync + build na VPS + up). Variáveis no `.env` da VPS:
-`NUTROLAB_HOST`, `NUTROLAB_SESSION_SECRET`, `ANTHROPIC_API_KEY`, `SMTP_*` (opcional).
+`NUTROLAB_HOST`, `NUTROLAB_SESSION_SECRET`, `NUTROLAB_INTEGRATION_TOKEN` (gerado pelo script se
+ausente), `ANTHROPIC_API_KEY`, `SMTP_*` (opcional).
 Backup diário 03h15 em `/srv/clinica/nutrolab-data/backups/`, retenção 14 dias.
