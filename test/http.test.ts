@@ -259,7 +259,8 @@ test('login profissional: nome + CPF + conselho + senha; perfil e cadastro pelo 
 test('ajuste rápido das referências: ordem validada, barra renderizada, ativação', async () => {
   const pageQ = await get('/regras?sistema=vitaminas');
   assert.equal(pageQ.statusCode, 200);
-  assert.match(pageQ.body, /Crítico ↓/);
+  assert.match(pageQ.body, /class="refrow"/);
+  assert.match(pageQ.body, /aria-label="ótimo de"/);
   assert.match(pageQ.body, /background:#22c55e/);
   const bad = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '60', target_max: '50', normal_max: '100', critical_high: '150', status: 'ativo' });
   assert.match(bad.headers.location ?? '', /crescer%20da%20esquerda/);
