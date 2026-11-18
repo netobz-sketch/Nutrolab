@@ -34,6 +34,7 @@ export const CONTEXTS: Record<string, string> = {
   pre_menopausa: 'Pré-menopausa',
   pos_menopausa: 'Pós-menopausa',
   fase_folicular: 'Fase folicular',
+  fase_ovulatoria: 'Fase ovulatória',
   fase_lutea: 'Fase lútea',
   jejum: 'Jejum ≥ 8 h confirmado',
   sem_jejum: 'Sem jejum / não confirmado',

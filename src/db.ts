@@ -201,6 +201,9 @@ const MIGRATIONS: Array<[table: string, column: string, ddl: string]> = [
   ['analyses', 'finalized_at', 'TEXT'],
   ['case_files', 'mime', "TEXT NOT NULL DEFAULT 'application/pdf'"],
   ['cases', 'patient_id', 'INTEGER'],
+  ['cases', 'cycle_phase', "TEXT NOT NULL DEFAULT ''"],
+  ['cases', 'contraceptive', "TEXT NOT NULL DEFAULT ''"],
+  ['cases', 'hrt', "TEXT NOT NULL DEFAULT ''"],
 ];
 
 const EXTRA_SCHEMA = `

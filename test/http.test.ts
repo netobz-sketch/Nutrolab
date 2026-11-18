@@ -415,3 +415,31 @@ test('modelos de conduta: criar, gatilho casa com o caso, aplicar, salvar a part
   assert.match(newT.body, /Modelo do caso #1/);
   assert.match(newT.body, /vitamina_d_25oh:abaixo_do_alvo/);
 });
+
+test('hormônios femininos: faixa por fase do ciclo; anticoncepcional combinado suspende as faixas do ciclo', async () => {
+  const rule = await post('/regras', { exam_canonical: 'estradiol', aliases: 'Estradiol | E2', sex: 'F', contexts: ['fase_lutea'], unit: 'pg/mL', normal_min: '40', normal_max: '260', target_min: '60', target_max: '260', target_text: '', critical_low: '', critical_high: '', clinical_source: 'teste por fase', version: '1.0', reviewed_at: '2026-11-18', status: 'ativo', system: 'hormonal', age_min: '', age_max: '' });
+  assert.equal(rule.statusCode, 302);
+  const run = async (extra: Record<string, string>) => {
+    const nc = await post('/casos', { patient_name: 'Hormonal Teste', sex: 'F', birth_date: '1990-02-02', menopause: 'nao', ...extra });
+    const cid = Number(/\/casos\/(\d+)/.exec(nc.headers.location ?? '')?.[1]);
+    await post(`/casos/${cid}/resultados`, { exam_raw: 'Estradiol', value_raw: '120', unit_raw: 'pg/mL', collection_date: '2026-11-01', confidence: 'alta', page: '', source_file: '', lab_reference: '', lab_flag: '' });
+    const previa = (await get(`/casos/${cid}/previa`)).json().data as Array<{ exam: string | null; classification: string; notes: string[] }>;
+    return { cid, ev: previa[0] };
+  };
+  const lutea = await run({ cycle_phase: 'lutea' });
+  assert.equal(lutea.ev?.exam, 'estradiol');
+  assert.equal(lutea.ev?.classification, 'dentro_do_alvo');
+  const semFase = await run({});
+  assert.equal(semFase.ev?.classification, 'nao_comparavel');
+  assert.ok(semFase.ev?.notes.some((n) => n.includes('fase_lutea')));
+  const pilula = await run({ cycle_phase: 'lutea', contraceptive: 'combinado' });
+  assert.equal(pilula.ev?.classification, 'nao_comparavel');
+  const conf = await get(`/casos/${pilula.cid}/conferencia`);
+  const rid = /include_(\d+)/.exec(conf.body)?.[1];
+  await post(`/casos/${pilula.cid}/conferencia`, { action: 'ok_todos', [`exam_raw_${rid}`]: 'Estradiol', [`value_raw_${rid}`]: '120', [`unit_raw_${rid}`]: 'pg/mL', [`include_${rid}`]: '1', [`collection_date_${rid}`]: '2026-11-01' });
+  const an = await post(`/casos/${pilula.cid}/analisar`, {});
+  const aid = /analises\/(\d+)/.exec(an.headers.location ?? '')?.[1];
+  const tech = await get(`/casos/${pilula.cid}/analises/${aid}/download?tipo=tecnico`);
+  assert.match(tech.body, /anticoncepcional hormonal combinado/);
+  assert.match(tech.body, /Contexto hormonal: fase do ciclo lutea · anticoncepcional combinado/);
+});

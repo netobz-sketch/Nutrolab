@@ -152,3 +152,67 @@ export const REFERENCE_DEFAULTS: Record<string, Defaults> = {
   psa_total: { sexOnly: true, M: [null, 4, null, 2.5, null, 10] },
   beta_hcg: { all: [null, 5, null, 5, null, null] },
 };
+
+/**
+ * Faixas que dependem do contexto feminino (fase do ciclo, menopausa, anticoncepcional,
+ * TRH) ou da idade. Faixas laboratoriais usuais (imunoensaio, adultos); em uso de
+ * anticoncepcional hormonal combinado, estradiol/progesterona/FSH/LH ficam suprimidos e
+ * NÃO são interpretados pelas faixas do ciclo (o sistema avisa em vez de classificar).
+ */
+export interface ContextDefault { exam: string; sex: 'F' | 'M' | 'todos'; contexts: string[]; age_min?: number; age_max?: number; band: Band }
+
+export const CONTEXT_DEFAULTS: ContextDefault[] = [
+  // estradiol (pg/mL)
+  { exam: 'estradiol', sex: 'F', contexts: ['fase_folicular'], band: [20, 150, 40, 150, null, null] },
+  { exam: 'estradiol', sex: 'F', contexts: ['fase_ovulatoria'], band: [90, 500, 100, 500, null, null] },
+  { exam: 'estradiol', sex: 'F', contexts: ['fase_lutea'], band: [40, 260, 60, 260, null, null] },
+  { exam: 'estradiol', sex: 'F', contexts: ['pos_menopausa'], band: [null, 40, null, 40, null, null] },
+  // progesterona (ng/mL)
+  { exam: 'progesterona', sex: 'F', contexts: ['fase_folicular'], band: [null, 1.0, null, 1.0, null, null] },
+  { exam: 'progesterona', sex: 'F', contexts: ['fase_ovulatoria'], band: [null, 12, null, 12, null, null] },
+  { exam: 'progesterona', sex: 'F', contexts: ['fase_lutea'], band: [2, 25, 10, 25, null, null] },
+  { exam: 'progesterona', sex: 'F', contexts: ['pos_menopausa'], band: [null, 0.5, null, 0.5, null, null] },
+  // FSH (mUI/mL)
+  { exam: 'fsh', sex: 'F', contexts: ['fase_folicular'], band: [3.5, 12.5, 3.5, 10, null, null] },
+  { exam: 'fsh', sex: 'F', contexts: ['fase_ovulatoria'], band: [4.7, 21.5, 4.7, 21.5, null, null] },
+  { exam: 'fsh', sex: 'F', contexts: ['fase_lutea'], band: [1.7, 7.7, 1.7, 7.7, null, null] },
+  { exam: 'fsh', sex: 'F', contexts: ['pos_menopausa'], band: [25.8, 134.8, 25.8, 134.8, null, null] },
+  { exam: 'fsh', sex: 'M', contexts: ['geral'], band: [1.5, 12.4, 1.5, 12.4, null, null] },
+  // LH (mUI/mL)
+  { exam: 'lh', sex: 'F', contexts: ['fase_folicular'], band: [2.4, 12.6, 2.4, 12.6, null, null] },
+  { exam: 'lh', sex: 'F', contexts: ['fase_ovulatoria'], band: [14, 95.6, 14, 95.6, null, null] },
+  { exam: 'lh', sex: 'F', contexts: ['fase_lutea'], band: [1.0, 11.4, 1.0, 11.4, null, null] },
+  { exam: 'lh', sex: 'F', contexts: ['pos_menopausa'], band: [7.7, 58.5, 7.7, 58.5, null, null] },
+  { exam: 'lh', sex: 'M', contexts: ['geral'], band: [1.7, 8.6, 1.7, 8.6, null, null] },
+  // SHBG (nmol/L): anticoncepcional e TRH oral elevam
+  { exam: 'shbg', sex: 'F', contexts: ['geral'], band: [18, 144, 30, 100, null, null] },
+  { exam: 'shbg', sex: 'F', contexts: ['uso_anticoncepcional'], band: [30, 250, 30, 250, null, null] },
+  { exam: 'shbg', sex: 'F', contexts: ['trh'], band: [25, 200, 25, 200, null, null] },
+  { exam: 'shbg', sex: 'M', contexts: ['geral'], band: [18, 54, 20, 50, null, null] },
+  // testosterona total F (ng/dL)
+  { exam: 'testosterona_total', sex: 'F', contexts: ['pos_menopausa'], band: [10, 50, 15, 45, null, null] },
+  // TSH na gestação (µUI/mL)
+  { exam: 'tsh', sex: 'F', contexts: ['gestacao'], band: [0.1, 3.0, 0.5, 2.5, 0.01, 10] },
+  // DHEA-S (µg/dL) por sexo e idade
+  { exam: 'dhea_s', sex: 'F', contexts: ['geral'], age_min: 18, age_max: 29, band: [44, 332, 150, 332, null, null] },
+  { exam: 'dhea_s', sex: 'F', contexts: ['geral'], age_min: 30, age_max: 39, band: [31, 228, 120, 228, null, null] },
+  { exam: 'dhea_s', sex: 'F', contexts: ['geral'], age_min: 40, age_max: 49, band: [18, 244, 100, 244, null, null] },
+  { exam: 'dhea_s', sex: 'F', contexts: ['geral'], age_min: 50, age_max: 59, band: [15, 200, 80, 200, null, null] },
+  { exam: 'dhea_s', sex: 'F', contexts: ['geral'], age_min: 60, band: [10, 160, 60, 160, null, null] },
+  { exam: 'dhea_s', sex: 'M', contexts: ['geral'], age_min: 18, age_max: 29, band: [89, 457, 200, 457, null, null] },
+  { exam: 'dhea_s', sex: 'M', contexts: ['geral'], age_min: 30, age_max: 39, band: [65, 334, 180, 334, null, null] },
+  { exam: 'dhea_s', sex: 'M', contexts: ['geral'], age_min: 40, age_max: 49, band: [48, 244, 150, 244, null, null] },
+  { exam: 'dhea_s', sex: 'M', contexts: ['geral'], age_min: 50, age_max: 59, band: [35, 179, 100, 179, null, null] },
+  { exam: 'dhea_s', sex: 'M', contexts: ['geral'], age_min: 60, band: [25, 130, 70, 130, null, null] },
+  // AMH (ng/mL) por idade
+  { exam: 'amh', sex: 'F', contexts: ['geral'], age_min: 18, age_max: 29, band: [1.5, 6.0, 2.0, 6.0, null, null] },
+  { exam: 'amh', sex: 'F', contexts: ['geral'], age_min: 30, age_max: 34, band: [1.0, 4.5, 1.5, 4.5, null, null] },
+  { exam: 'amh', sex: 'F', contexts: ['geral'], age_min: 35, age_max: 39, band: [0.5, 3.5, 1.0, 3.5, null, null] },
+  { exam: 'amh', sex: 'F', contexts: ['geral'], age_min: 40, age_max: 44, band: [0.1, 2.0, 0.5, 2.0, null, null] },
+  { exam: 'amh', sex: 'F', contexts: ['geral'], age_min: 45, band: [null, 1.0, null, 1.0, null, null] },
+];
+
+export const CONTEXT_SOURCE = 'Faixas por fase do ciclo, menopausa, anticoncepcional, TRH e idade (imunoensaio, laboratórios de referência, nov/2026). Conferir com o laboratório; ajustar à prática.';
+
+/** Exames cujas faixas do ciclo não valem em uso de anticoncepcional hormonal combinado. */
+export const SUPPRESSED_BY_CONTRACEPTIVE = ['estradiol', 'progesterona', 'fsh', 'lh'];

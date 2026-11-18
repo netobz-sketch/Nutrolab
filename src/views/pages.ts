@@ -9,6 +9,9 @@ import { attr, brandMark, fmtDate, h, icon, option, statusTag } from './html.js'
 export interface CaseRow {
   id: number;
   patient_id: number | null;
+  cycle_phase: string;
+  contraceptive: string;
+  hrt: string;
   patient_code: string;
   patient_name: string;
   complaints: string[];
@@ -114,6 +117,11 @@ ${c ? '' : patientSelect}
 <div><label>Data de nascimento</label><input name="birth_date" type="date" value="${v('birth_date')}"></div>
 <div><label>Sexo biológico</label><select name="sex">${option('', 'não informado', c?.sex ?? '')}${option('F', 'Feminino', c?.sex ?? '')}${option('M', 'Masculino', c?.sex ?? '')}</select></div>
 <div><label>Menopausa (se mulher)</label><select name="menopause">${option('', 'não se aplica / não informado', meno)}${option('nao', 'Não (ciclos regulares)', meno)}${option('peri', 'Perimenopausa', meno)}${option('pos', 'Pós-menopausa', meno)}</select></div>
+</div></div>
+<div class="card"><h2 style="margin-top:0">Contexto hormonal feminino</h2><p class="muted small" style="margin-top:0">Estradiol, progesterona, FSH, LH, SHBG e DHEA-S são interpretados conforme estas respostas. Sem a fase do ciclo, os hormônios do ciclo ficam "não comparáveis"; em anticoncepcional hormonal, as faixas do ciclo não se aplicam e o relatório avisa.</p><div class="grid">
+<div><label>Fase do ciclo na coleta</label><select name="cycle_phase">${option('', 'não sei / não se aplica', c?.cycle_phase ?? '')}${option('folicular', 'Folicular (dia 1 a ~13)', c?.cycle_phase ?? '')}${option('ovulatoria', 'Ovulatória (~dia 12 a 16)', c?.cycle_phase ?? '')}${option('lutea', 'Lútea (após a ovulação)', c?.cycle_phase ?? '')}</select></div>
+<div><label>Anticoncepcional hormonal</label><select name="contraceptive">${option('', 'não / não se aplica', c?.contraceptive ?? '')}${option('combinado', 'Combinado (pílula, anel, adesivo, injetável)', c?.contraceptive ?? '')}${option('progestagenio', 'Só progestagênio (pílula, implante, injetável)', c?.contraceptive ?? '')}${option('diu_hormonal', 'DIU hormonal', c?.contraceptive ?? '')}</select></div>
+<div><label>Reposição hormonal (TRH)</label><select name="hrt">${option('', 'não', c?.hrt ?? '')}${option('sim', 'Sim', c?.hrt ?? '')}</select></div>
 </div></div>
 <div class="card"><h2 style="margin-top:0">Contexto clínico</h2>
 <label>Contextos confirmados (afetam as regras: jejum, gestação, TRH…)</label>${contextChips(c?.contexts ?? [])}

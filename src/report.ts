@@ -1,4 +1,17 @@
 import { CLASSIFICATION_LABEL, COMPLAINTS, CONTEXTS, formatNumber, scoreBand, SYSTEMS } from './engine/index.js';
+import { SUPPRESSED_BY_CONTRACEPTIVE } from './engine/reference-defaults.js';
+
+export function hormonalWarnings(caseInfo: { sex: 'M' | 'F' | null; cycle_phase?: string; contraceptive?: string; hrt?: string; menopause: string }, evals: Evaluation[]): string[] {
+  if (caseInfo.sex !== 'F') return [];
+  const out: string[] = [];
+  const present = (exam: string) => evals.some((e) => e.exam_canonical === exam);
+  const hormones = SUPPRESSED_BY_CONTRACEPTIVE.filter(present);
+  if (caseInfo.contraceptive === 'combinado' && hormones.length) out.push(`Em uso de anticoncepcional hormonal combinado: ${hormones.join(', ')} ficam suprimidos pelo método e não foram comparados às faixas do ciclo menstrual.`);
+  if (caseInfo.contraceptive && caseInfo.contraceptive !== 'combinado' && hormones.length) out.push(`Em uso de progestagênio isolado / DIU hormonal: ${hormones.join(', ')} podem estar alterados pelo método; interpretar com cautela.`);
+  if (!caseInfo.cycle_phase && caseInfo.menopause !== 'pos' && !caseInfo.contraceptive && hormones.length) out.push(`Fase do ciclo menstrual não informada: ${hormones.join(', ')} dependem da fase e não foram comparados a alvo (informe a fase no pré-questionário para classificar).`);
+  if (caseInfo.hrt === 'sim') out.push('Em terapia de reposição hormonal: estradiol e progesterona refletem a dose e a via (oral, transdérmica); as faixas fisiológicas não se aplicam diretamente.');
+  return out;
+}
 import type { DerivedResult, Evaluation, Guidance, PatientProfile, Score } from './engine/index.js';
 import type { Reports } from './ai.js';
 
@@ -16,6 +29,9 @@ export interface CaseInfo {
   menopause: string;
   ai_notes: string;
   files: string[];
+  cycle_phase?: string;
+  contraceptive?: string;
+  hrt?: string;
 }
 
 export interface ConductItem {
@@ -246,6 +262,7 @@ export function buildTechnicalReport(input: ReportInput): string {
   L.push(`- Comorbidades: ${caseInfo.comorbidities || '—'}`);
   L.push(`- Medicamentos: ${caseInfo.medications || '—'} · Suplementos: ${caseInfo.supplements || '—'}`);
   L.push(`- Queixas: ${caseInfo.complaints.map((c) => COMPLAINTS[c] ?? c).join(', ') || 'nenhuma marcada'}`);
+  if (caseInfo.sex === 'F') L.push(`- Contexto hormonal: fase do ciclo ${caseInfo.cycle_phase || 'não informada'} · anticoncepcional ${caseInfo.contraceptive || 'não'} · TRH ${caseInfo.hrt === 'sim' ? 'sim' : 'não'}`);
   L.push(`- Objetivo terapêutico: ${caseInfo.goal || '—'}`);
   if (caseInfo.ai_notes) L.push(`- Observações do médico para a interpretação: ${caseInfo.ai_notes}`);
   L.push(`- Arquivo(s): ${caseInfo.files.length ? caseInfo.files.join(', ') : 'lançamento manual'}`);
@@ -337,6 +354,7 @@ export function buildTechnicalReport(input: ReportInput): string {
   evals.filter((e) => !e.exam_canonical).forEach((e) => limitations.push(`${e.result.exam_raw}: sem correspondência na tabela; não classificado.`));
   evals.filter((e) => e.result.confidence !== 'alta').forEach((e) => limitations.push(`${e.result.exam_raw}: confiança de extração ${e.result.confidence} (${origin(e)}).`));
   if (tableVersion === 'sem regras ativas') limitations.push('A tabela clínica não tem regras ativas: nenhum resultado foi classificado.');
+  limitations.push(...hormonalWarnings(caseInfo, evals));
   if (narrative) limitations.push(narrative.tecnico.limitacoes);
   if (!limitations.length) L.push('Nenhuma limitação identificada.');
   limitations.forEach((l) => L.push(`- ${l}`));

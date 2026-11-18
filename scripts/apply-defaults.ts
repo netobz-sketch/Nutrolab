@@ -5,7 +5,7 @@
  *   node dist/scripts/apply-defaults.js [--dry]
  */
 import { openDb, getDb, str, num, type Row } from '../src/db.js';
-import { REFERENCE_DEFAULTS, REFERENCE_SOURCE, type Band } from '../src/engine/reference-defaults.js';
+import { CONTEXT_DEFAULTS, CONTEXT_SOURCE, REFERENCE_DEFAULTS, REFERENCE_SOURCE, type Band } from '../src/engine/reference-defaults.js';
 
 const dry = process.argv.includes('--dry');
 openDb();
@@ -63,6 +63,28 @@ for (const [exam, d] of Object.entries(REFERENCE_DEFAULTS)) {
     inserted += 1;
   }
 }
+// ---- faixas por contexto / idade
+let ctxInserted = 0;
+let ctxUpdated = 0;
+const insCtx = db.prepare("INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, system, normal_min, normal_max, target_min, target_max, critical_low, critical_high, clinical_source, version, reviewed_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1.0', ?, 'ativo')");
+const updCtx = db.prepare("UPDATE rules SET normal_min=?, normal_max=?, target_min=?, target_max=?, critical_low=?, critical_high=?, clinical_source=?, reviewed_at=?, status='ativo', updated_at=datetime('now') WHERE id=?");
+for (const c of CONTEXT_DEFAULTS) {
+  const base = db.prepare('SELECT aliases, unit, system FROM rules WHERE exam_canonical = ? ORDER BY id LIMIT 1').get(c.exam) as Row | undefined;
+  if (!base) continue;
+  const contexts = c.contexts.join('|');
+  const existing = db.prepare('SELECT id, clinical_source FROM rules WHERE exam_canonical = ? AND sex = ? AND contexts = ? AND IFNULL(age_min,-1) = IFNULL(?, -1) AND IFNULL(age_max,-1) = IFNULL(?, -1)').get(c.exam, c.sex, contexts, c.age_min ?? null, c.age_max ?? null) as Row | undefined;
+  const b = c.band;
+  if (existing) {
+    if (untouched(str(existing, 'clinical_source')) || /^Faixas por fase/.test(str(existing, 'clinical_source'))) {
+      if (!dry) updCtx.run(b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today, num(existing, 'id'));
+      ctxUpdated += 1;
+    }
+    continue;
+  }
+  if (!dry) insCtx.run(c.exam, str(base, 'aliases'), c.sex, c.age_min ?? null, c.age_max ?? null, contexts, str(base, 'unit'), str(base, 'system'), b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today);
+  ctxInserted += 1;
+}
+console.log(`faixas por contexto/idade: inseridas ${ctxInserted}, atualizadas ${ctxUpdated}`);
 const counts = db.prepare("SELECT status, COUNT(*) n FROM rules GROUP BY status").all() as Row[];
 console.log(`${dry ? '[simulação] ' : ''}atualizadas: ${updated}, inseridas por sexo: ${inserted}, puladas (editadas pelo médico ou ausentes): ${skipped}`);
 console.log('status:', counts.map((c) => `${str(c, 'status')}=${num(c, 'n')}`).join(', '));

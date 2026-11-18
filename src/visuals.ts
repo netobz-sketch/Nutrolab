@@ -70,7 +70,7 @@ function friendly(ev: Evaluation): { text: string; color: string } {
   }
 }
 
-export function patientVisualPanel(score: Score, evals: Evaluation[], previous: Map<string, { raw: string; unit: string; date: string }> = new Map()): string {
+export function patientVisualPanel(score: Score, evals: Evaluation[], previous: Map<string, { raw: string; unit: string; date: string }> = new Map(), warnings: string[] = []): string {
   const comparable = evals.filter((e) => e.rule && e.classification !== 'sem_alvo' && e.classification !== 'nao_comparavel' && e.classification !== 'regra_ambigua');
   const ok = comparable.filter((e) => e.classification === 'dentro_do_alvo' || e.classification === 'qualitativo_compativel').length;
   const near = comparable.filter((e) => (e.classification === 'abaixo_do_alvo' || e.classification === 'acima_do_alvo') && e.normality === 'dentro' && !e.critical).length;
@@ -91,7 +91,8 @@ export function patientVisualPanel(score: Score, evals: Evaluation[], previous: 
     }).join('');
     return `<div style="break-inside:avoid;background:#fff;border:1px solid ${C.line};border-radius:12px;padding:12px 14px;min-width:0"><div style="display:flex;gap:12px;align-items:center"><div>${miniGauge(s.score)}</div><div style="min-width:0"><div style="font-weight:700;font-size:15px">${h(s.label)}</div><div style="font-size:12.5px;color:${s.score >= 80 ? '#15803d' : s.score >= 60 ? '#b45309' : '#b91c1c'};font-weight:600">${bandLabel(s.score)}</div><div style="font-size:12px;color:${C.muted}">${s.n} exame${s.n === 1 ? '' : 's'}</div></div></div>${rows}</div>`;
   }).join('');
-  return `<section aria-label="Painel visual" style="${style}">${head}${legend}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:22px">${systems}</div></section>`;
+  const warn = warnings.length ? `<div style="background:#fff8e6;border:1px solid #f59e0b;border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:13px">${warnings.map((w) => `<div>⚠ ${h(w)}</div>`).join('')}</div>` : '';
+  return `<section aria-label="Painel visual" style="${style}">${warn}${head}${legend}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:22px">${systems}</div></section>`;
 }
 
 export function classificationWord(ev: Evaluation): string {

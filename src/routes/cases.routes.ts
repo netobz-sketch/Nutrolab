@@ -8,7 +8,7 @@ import { AiError, AI_MODEL, aiEnabled, extractFromFile, suggestConduct, suggestF
 import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, list, num, numOrNull, reportSettings, str, strOrNull, tableVersion, UPLOAD_DIR, type Formula, type Row } from '../db.js';
 import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS, evaluateAll, evaluateResult, gaugeSvg, type Evaluation, type PatientProfile, type ResultInput } from '../engine/index.js';
 import { renderMarkdown } from '../markdown.js';
-import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, type ConductItem, type ReportInput } from '../report.js';
+import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, hormonalWarnings, type ConductItem, type ReportInput } from '../report.js';
 import { patientVisualPanel } from '../visuals.js';
 import { previousValues } from '../evolution.js';
 import { allPatients, loadPatient } from './patients.routes.js';
@@ -34,6 +34,9 @@ const CaseBody = z.object({
   patient_code: z.string().trim().max(40).regex(/^[\w.\-/ ]*$/u, 'use só letras, números, ponto, traço ou barra').default(''),
   patient_name: z.string().trim().max(120).default(''),
   menopause: z.enum(['', 'nao', 'peri', 'pos']).default(''),
+  cycle_phase: z.enum(['', 'folicular', 'ovulatoria', 'lutea']).default(''),
+  contraceptive: z.enum(['', 'combinado', 'progestagenio', 'diu_hormonal']).default(''),
+  hrt: z.enum(['', 'sim']).default(''),
   complaints: z.union([z.string(), z.array(z.string())]).optional(),
   ai_notes: z.string().trim().max(5000).default(''),
   sex: z.enum(['', 'M', 'F']).default(''),
@@ -67,10 +70,15 @@ function toComplaints(v: string | string[] | undefined): string[] {
   return arr.filter((c) => c in COMPLAINTS);
 }
 /** Contextos efetivos: os marcados + o derivado da menopausa. */
-export function effectiveContexts(contexts: string[], menopause: string): string[] {
+export function effectiveContexts(contexts: string[], menopause: string, cyclePhase = '', contraceptive = '', hrt = ''): string[] {
   const set = new Set(contexts);
   if (menopause === 'pos') set.add('pos_menopausa');
   if (menopause === 'nao') set.add('pre_menopausa');
+  if (contraceptive) set.add('uso_anticoncepcional');
+  if (hrt === 'sim') set.add('trh');
+  // Em anticoncepcional combinado o ciclo é suprimido: não aplicar faixas por fase.
+  if (cyclePhase && contraceptive !== 'combinado' && menopause !== 'pos') set.add(`fase_${cyclePhase}`);
+  if (contraceptive === 'combinado') for (const k of ['fase_folicular', 'fase_ovulatoria', 'fase_lutea']) set.delete(k);
   return [...set];
 }
 
@@ -78,6 +86,9 @@ export function rowToCase(row: Row): CaseRow {
   return {
     id: num(row, 'id'),
     patient_id: numOrNull(row, 'patient_id'),
+    cycle_phase: str(row, 'cycle_phase'),
+    contraceptive: str(row, 'contraceptive'),
+    hrt: str(row, 'hrt'),
     patient_code: str(row, 'patient_code'),
     patient_name: str(row, 'patient_name'),
     complaints: list(str(row, 'complaints')),
@@ -129,7 +140,7 @@ function loadFiles(caseId: number): FileRow[] {
 }
 
 export function profileOf(c: CaseRow): PatientProfile {
-  return { sex: c.sex === 'M' || c.sex === 'F' ? c.sex : null, birthDate: c.birth_date, contexts: new Set(effectiveContexts(c.contexts, c.menopause)) };
+  return { sex: c.sex === 'M' || c.sex === 'F' ? c.sex : null, birthDate: c.birth_date, contexts: new Set(effectiveContexts(c.contexts, c.menopause, c.cycle_phase, c.contraceptive, c.hrt)) };
 }
 
 export function toInputs(results: ResultRow[]): ResultInput[] {
@@ -178,7 +189,7 @@ function loadConduct(analysisId: number): ConductRow[] {
 }
 
 function caseInfoOf(c: CaseRow, files: string[]): ReportInput['caseInfo'] {
-  return { id: c.id, patient_code: c.patient_code, patient_name: c.patient_name, sex: c.sex === 'M' || c.sex === 'F' ? c.sex : null, birth_date: c.birth_date, medications: c.medications, supplements: c.supplements, comorbidities: c.comorbidities, goal: c.goal, complaints: c.complaints, menopause: c.menopause, ai_notes: c.ai_notes, files };
+  return { id: c.id, patient_code: c.patient_code, patient_name: c.patient_name, sex: c.sex === 'M' || c.sex === 'F' ? c.sex : null, birth_date: c.birth_date, medications: c.medications, supplements: c.supplements, comorbidities: c.comorbidities, goal: c.goal, complaints: c.complaints, menopause: c.menopause, ai_notes: c.ai_notes, files, cycle_phase: c.cycle_phase, contraceptive: c.contraceptive, hrt: c.hrt };
 }
 
 /** Pergunta para o OpenEvidence a partir dos pontos críticos (fora do alvo / crítico). */
@@ -201,7 +212,7 @@ function scoreFromRow(row: Row): Score | null {
 
 function reportPayload(c: CaseRow, profile: PatientProfile, evals: Evaluation[], derived: ReturnType<typeof computeDerived>, guidances: ReturnType<typeof applicableGuidances>, score: Score) {
   return {
-    paciente: { codigo: c.patient_code, sexo: c.sex, nascimento: c.birth_date, menopausa: c.menopause || null, contextos: [...profile.contexts], queixas: c.complaints.map((k) => COMPLAINTS[k] ?? k), comorbidades: c.comorbidities, medicamentos: c.medications, suplementos: c.supplements, objetivo: c.goal, observacoes_do_medico: c.ai_notes },
+    paciente: { codigo: c.patient_code, sexo: c.sex, nascimento: c.birth_date, menopausa: c.menopause || null, fase_do_ciclo: c.cycle_phase || null, anticoncepcional: c.contraceptive || null, trh: c.hrt === 'sim', contextos: [...profile.contexts], queixas: c.complaints.map((k) => COMPLAINTS[k] ?? k), comorbidades: c.comorbidities, medicamentos: c.medications, suplementos: c.supplements, objetivo: c.goal, observacoes_do_medico: c.ai_notes },
     score: { total: score.total, por_sistema: score.bySystem },
     resultados: evals.map((e) => ({ sistema: e.rule?.system ?? 'outros', exame: e.exam_canonical ?? e.result.exam_raw, valor: e.result.value_raw, unidade: e.result.unit_raw, referencia_lab: e.result.lab_reference, sinal_lab: e.result.lab_flag, normalidade: e.normality, alvo: e.rule ? { min: e.rule.target_min, max: e.rule.target_max, texto: e.rule.target_text, unidade: e.rule.unit } : null, classificacao: e.classification, critico: e.critical, data: e.result.collection_date, confianca: e.result.confidence, notas: e.notes })),
     calculos: derived.map((d) => ({ indice: d.name, valor: d.value, motivo: d.reason, data: d.collection_date })),
@@ -275,7 +286,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (p) {
       const last = getDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id) as Row | undefined;
       const base = last ? rowToCase(last) : null;
-      prefill = { id: 0, patient_id: p.id, patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
+      prefill = { id: 0, patient_id: p.id, cycle_phase: '', contraceptive: base?.contraceptive ?? '', hrt: base?.hrt ?? '', patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
     }
     const body = caseFormPage(prefill, null, allPatients(), p?.id ?? null).replace('action="/casos/0/editar"', 'action="/casos"');
     return page(request, reply, 'Novo caso', body, p && p.consent_status !== 'assinado' ? { kind: 'warn', text: 'Este paciente ainda não tem consentimento LGPD registrado como assinado.' } : null);
@@ -300,8 +311,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     }
     if (!patient) return reply.code(500).send('Falha ao vincular paciente');
     const info = getDb()
-      .prepare('INSERT INTO cases(patient_id, patient_code, patient_name, menopause, complaints, ai_notes, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(patient.id, patient.code, patient.name, d.menopause, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || patient.sex, d.birth_date || patient.birth_date, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null);
+      .prepare('INSERT INTO cases(patient_id, patient_code, patient_name, menopause, cycle_phase, contraceptive, hrt, complaints, ai_notes, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(patient.id, patient.code, patient.name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || patient.sex, d.birth_date || patient.birth_date, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null);
     const id = Number(info.lastInsertRowid);
     audit(request.user?.id ?? null, 'criar', 'case', id, { patient_id: patient.id, patient_code: patient.code }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Caso criado. Etapa 2: anexe os exames (PDF ou imagem) e extraia.');
@@ -331,8 +342,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!parsed.success) return page(request, reply, 'Editar caso', caseFormPage(c, parsed.error.issues[0]?.message ?? 'Dados inválidos.'));
     const d = parsed.data;
     getDb()
-      .prepare("UPDATE cases SET patient_code=?, patient_name=?, menopause=?, complaints=?, ai_notes=?, sex=?, birth_date=?, contexts=?, medications=?, supplements=?, comorbidities=?, goal=?, notes=?, updated_at=datetime('now') WHERE id=?")
-      .run(d.patient_code || c.patient_code, d.patient_name, d.menopause, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || null, d.birth_date || null, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, id);
+      .prepare("UPDATE cases SET patient_code=?, patient_name=?, menopause=?, cycle_phase=?, contraceptive=?, hrt=?, complaints=?, ai_notes=?, sex=?, birth_date=?, contexts=?, medications=?, supplements=?, comorbidities=?, goal=?, notes=?, updated_at=datetime('now') WHERE id=?")
+      .run(d.patient_code || c.patient_code, d.patient_name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || null, d.birth_date || null, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, id);
     audit(request.user?.id ?? null, 'editar', 'case', id, { before: { sex: c.sex, birth_date: c.birth_date, contexts: c.contexts }, after: { sex: d.sex, birth_date: d.birth_date, contexts: toList(d.contexts) } }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Caso atualizado.');
   });
@@ -549,7 +560,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
-    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id)) : '');
+    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals)) : '');
     return page(request, reply, `Análise #${aid}`, analysisPage({
       c, analysis, score: storedScore,
       patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
@@ -778,7 +789,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
     if (score) {
       const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
-      top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id));
+      top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
     }
     top = brandHeader() + top;
     return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: top + renderMarkdown(md), print: true }));
