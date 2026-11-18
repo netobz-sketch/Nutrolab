@@ -8,6 +8,7 @@ export const DATA_DIR = path.resolve(process.env.DATA_DIR ?? './data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 export const BRAND_DIR = path.join(DATA_DIR, 'branding');
 export const FORMULARY_DIR = path.join(DATA_DIR, 'formularios');
+export const CONSENT_DIR = path.join(DATA_DIR, 'consentimentos');
 export const DB_PATH = path.join(DATA_DIR, 'nutrolab.sqlite');
 
 export type Row = Record<string, unknown>;
@@ -199,6 +200,7 @@ const MIGRATIONS: Array<[table: string, column: string, ddl: string]> = [
   ['analyses', 'final_technical', 'TEXT'],
   ['analyses', 'finalized_at', 'TEXT'],
   ['case_files', 'mime', "TEXT NOT NULL DEFAULT 'application/pdf'"],
+  ['cases', 'patient_id', 'INTEGER'],
 ];
 
 const EXTRA_SCHEMA = `
@@ -218,6 +220,42 @@ CREATE TABLE IF NOT EXISTS conduct_items (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_conduct_case ON conduct_items(case_id);
+CREATE TABLE IF NOT EXISTS patients (
+  id INTEGER PRIMARY KEY,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  birth_date TEXT,
+  sex TEXT CHECK (sex IN ('M','F') OR sex IS NULL),
+  phone TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  comorbidities TEXT NOT NULL DEFAULT '',
+  medications TEXT NOT NULL DEFAULT '',
+  supplements TEXT NOT NULL DEFAULT '',
+  goal TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  consent_status TEXT NOT NULL DEFAULT 'pendente' CHECK (consent_status IN ('pendente','assinado','recusado','revogado')),
+  consent_at TEXT,
+  consent_method TEXT NOT NULL DEFAULT '',
+  consent_version TEXT NOT NULL DEFAULT '',
+  consent_file TEXT,
+  consent_by INTEGER,
+  created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  deleted_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cases_patient ON cases(patient_id);
+CREATE TABLE IF NOT EXISTS conduct_templates (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  profile TEXT NOT NULL DEFAULT '',
+  triggers TEXT NOT NULL DEFAULT '',
+  items TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'ativo' CHECK (status IN ('ativo','inativo')),
+  created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS formula_files (
   id INTEGER PRIMARY KEY,
   original_name TEXT NOT NULL,
@@ -264,6 +302,7 @@ export function openDb(): DatabaseSync {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   fs.mkdirSync(BRAND_DIR, { recursive: true });
   fs.mkdirSync(FORMULARY_DIR, { recursive: true });
+  fs.mkdirSync(CONSENT_DIR, { recursive: true });
   db = new DatabaseSync(DB_PATH);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
@@ -272,6 +311,7 @@ export function openDb(): DatabaseSync {
   migrate(db);
   seedDefaults(db);
   seedCatalog(db);
+  backfillPatients(db);
   return db;
 }
 
@@ -664,3 +704,47 @@ export function rowToFormula(row: Row): Formula {
 export function allFormulas(): Formula[] {
   return (getDb().prepare('SELECT * FROM formulas ORDER BY kind, name').all() as Row[]).map(rowToFormula);
 }
+
+/** Casos antigos sem paciente: cria um paciente por código e vincula. */
+function backfillPatients(database: DatabaseSync): void {
+  const orphans = database.prepare('SELECT * FROM cases WHERE patient_id IS NULL AND deleted_at IS NULL ORDER BY id').all() as Row[];
+  for (const c of orphans) {
+    const code = str(c, 'patient_code') || `P-${String(num(c, 'id')).padStart(4, '0')}`;
+    let patient = database.prepare('SELECT id FROM patients WHERE code = ?').get(code) as Row | undefined;
+    if (!patient) {
+      database.prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, str(c, 'patient_name') || code, strOrNull(c, 'birth_date'), strOrNull(c, 'sex'), str(c, 'comorbidities'), str(c, 'medications'), str(c, 'supplements'), str(c, 'goal'), numOrNull(c, 'created_by'));
+      patient = database.prepare('SELECT id FROM patients WHERE code = ?').get(code) as Row;
+    }
+    database.prepare('UPDATE cases SET patient_id = ? WHERE id = ?').run(num(patient, 'id'), num(c, 'id'));
+  }
+}
+
+export interface Patient { id: number; code: string; name: string; birth_date: string | null; sex: 'M' | 'F' | null; phone: string; email: string; comorbidities: string; medications: string; supplements: string; goal: string; notes: string; consent_status: 'pendente' | 'assinado' | 'recusado' | 'revogado'; consent_at: string | null; consent_method: string; consent_version: string; consent_file: string | null; created_at: string }
+export function rowToPatient(row: Row): Patient {
+  return { id: num(row, 'id'), code: str(row, 'code'), name: str(row, 'name'), birth_date: strOrNull(row, 'birth_date'), sex: (strOrNull(row, 'sex') as Patient['sex']) ?? null, phone: str(row, 'phone'), email: str(row, 'email'), comorbidities: str(row, 'comorbidities'), medications: str(row, 'medications'), supplements: str(row, 'supplements'), goal: str(row, 'goal'), notes: str(row, 'notes'), consent_status: str(row, 'consent_status') as Patient['consent_status'], consent_at: strOrNull(row, 'consent_at'), consent_method: str(row, 'consent_method'), consent_version: str(row, 'consent_version'), consent_file: strOrNull(row, 'consent_file'), created_at: str(row, 'created_at') };
+}
+export function nextPatientCode(): string {
+  const row = getDb().prepare("SELECT MAX(id) AS m FROM patients").get() as Row;
+  return `P-${String((numOrNull(row, 'm') ?? 0) + 1).padStart(4, '0')}`;
+}
+
+export interface ConductTemplate { id: number; name: string; profile: string; triggers: string[]; items: Array<{ kind: string; title: string; rationale: string }>; status: 'ativo' | 'inativo' }
+export function rowToTemplate(row: Row): ConductTemplate {
+  let items: ConductTemplate['items'] = [];
+  try {
+    items = JSON.parse(str(row, 'items') || '[]') as ConductTemplate['items'];
+  } catch {
+    items = [];
+  }
+  return { id: num(row, 'id'), name: str(row, 'name'), profile: str(row, 'profile'), triggers: list(str(row, 'triggers')), items, status: str(row, 'status') as ConductTemplate['status'] };
+}
+export function allTemplates(): ConductTemplate[] {
+  return (getDb().prepare('SELECT * FROM conduct_templates ORDER BY name').all() as Row[]).map(rowToTemplate);
+}
+
+export const CONSENT_VERSION = '2026-11';
+export const DEFAULT_CONSENT_TEXT = `TERMO DE CONSENTIMENTO PARA TRATAMENTO DE DADOS PESSOAIS E DE SAÚDE (LGPD)
+
+Autorizo o(a) médico(a) responsável e a clínica a coletar, armazenar e tratar meus dados pessoais e de saúde (identificação, questionário clínico, exames laboratoriais e relatórios) com a finalidade de avaliação clínica, acompanhamento e elaboração de relatórios, nos termos da Lei nº 13.709/2018 (LGPD).
+
+Estou ciente de que: (1) os laudos podem ser lidos por sistema de inteligência artificial para transcrição e redação, sempre sob revisão e responsabilidade do médico; (2) meus dados não serão compartilhados com terceiros sem meu consentimento, salvo obrigação legal; (3) posso solicitar acesso, correção ou exclusão dos meus dados e revogar este consentimento a qualquer momento, pelos canais da clínica; (4) os dados serão mantidos pelo prazo exigido pela legislação sanitária e pelo Conselho Federal de Medicina.`;

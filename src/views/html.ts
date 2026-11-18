@@ -1,4 +1,21 @@
 import type { SessionUser } from '../auth.js';
+import { getSetting } from '../db.js';
+
+function logoVersion(): string {
+  try {
+    return getSetting('report.logo', '');
+  } catch {
+    return '';
+  }
+}
+
+/** Marca: logo da clínica quando houver, senão o símbolo padrão. */
+export function brandMark(size: 'nav' | 'login' = 'nav'): string {
+  const v = logoVersion();
+  if (!v) return `<span class="logo">${icon('logo')}</span>NutroLab`;
+  const h = size === 'login' ? 110 : 54;
+  return `<span class="brandimg" style="height:${h}px"><img src="/branding/logo?v=${v}" alt="Logo da clínica" style="max-height:${h - 10}px;max-width:${size === 'login' ? 260 : 190}px"></span>`;
+}
 
 export function h(value: unknown): string {
   return String(value ?? '')
@@ -58,6 +75,7 @@ h3{font-size:14px;font-weight:700;margin:16px 0 6px}
 .shell{display:flex;min-height:100vh}
 .sidenav{flex:0 0 232px;background:var(--nav-bg);border-right:1px solid var(--line);padding:20px 14px;display:flex;flex-direction:column;gap:4px;position:sticky;top:0;height:100vh}
 .brand{display:flex;align-items:center;gap:10px;padding:6px 8px 18px;color:var(--ink);text-decoration:none;font-weight:700;font-size:16px;letter-spacing:-.01em}
+.brandimg{display:flex;align-items:center;justify-content:center;background:#fff;border-radius:10px;padding:5px 10px;border:1px solid var(--line);width:100%}
 .brand .logo{width:32px;height:32px;border-radius:9px;background:var(--brand);display:flex;align-items:center;justify-content:center;color:var(--brand-ink)}
 .sidenav a.item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);color:var(--nav-ink);font-weight:500;text-decoration:none;min-height:44px}
 .sidenav a.item:hover{background:var(--nav-active-bg)}
@@ -165,6 +183,8 @@ const ICONS: Record<string, string> = {
   report: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/></svg>',
   external: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg>',
   pill: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7z"/><path d="m8.5 8.5 7 7"/></svg>',
+  patients: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
+  template: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
   logo: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v6l4 9a2 2 0 0 1-2 3H7a2 2 0 0 1-2-3l4-9z"/><path d="M8 15h8"/></svg>',
   theme: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9c0-.5 0-.9-.1-1.4A5.5 5.5 0 0 1 12 3z"/></svg>',
   warn: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
@@ -203,11 +223,13 @@ export function layout(opts: { title: string; user: SessionUser | null; body: st
   const admin = opts.user.role === 'admin';
   return `${head}<body><div class="shell">
 <nav class="sidenav" aria-label="Principal">
-<a class="brand" href="/casos"><span class="logo">${icon('logo')}</span>NutroLab</a>
+<a class="brand" href="/casos" style="flex-wrap:wrap">${brandMark('nav')}</a>
+${item('/pacientes', 'pacientes', 'Pacientes', 'patients')}
 ${item('/casos', 'casos', 'Casos', 'cases')}
 ${item('/regras', 'regras', 'Referências dos exames', 'rules')}
 ${item('/orientacoes', 'orientacoes', 'Orientações', 'guidance')}
 ${item('/formulas', 'formulas', 'Fórmulas', 'pill')}
+${item('/modelos', 'modelos', 'Modelos de conduta', 'template')}
 ${item('/relatorios', 'relatorios', 'Relatórios', 'report')}
 <a class="item" href="https://www.openevidence.com/" target="_blank" rel="noopener">${icon('external')}<span>OpenEvidence</span></a>
 ${admin ? item('/configuracoes', 'configuracoes', 'Configurações', 'settings') : ''}

@@ -7,11 +7,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { docxText } from '../docx.js';
-import { allFormulas, allGuidances, allRules, audit, BRAND_DIR, enabledCalcIds, FORMULARY_DIR, getDb, num, numOrNull, parseCsv, reportSettings, rowToFormula, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
+import { allFormulas, allGuidances, allRules, allTemplates, rowToTemplate, audit, BRAND_DIR, enabledCalcIds, FORMULARY_DIR, getDb, num, numOrNull, parseCsv, reportSettings, rowToFormula, rowToGuidance, rowToRule, rulesToCsv, RULE_CSV_COLUMNS, setSetting, str, strOrNull, type Row } from '../db.js';
 import { CALCS, CLASSIFICATIONS, CONTEXTS, SYSTEMS } from '../engine/index.js';
+const CONDUCT_KIND_LABEL_UI: Record<string, string> = { suplementacao: 'Suplementação', estilo_de_vida: 'Estilo de vida', seguimento: 'Seguimento', exame: 'Exames complementares', encaminhamento: 'Encaminhamento', medicamentoso: 'Medicamentoso', outro: 'Outros' };
 import { normalizeCouncilNumber, normalizeCpf } from '../cpf.js';
 import { layout } from '../views/html.js';
-import { auditPage, formulaFormPage, formulasPage, guidanceFormPage, guidancesPage, quickRulesPage, reportsPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type FormularyFileRow, type ReportListRow, type UserRow } from '../views/pages.js';
+import { auditPage, formulaFormPage, formulasPage, templateFormPage, templatesPage, guidanceFormPage, guidancesPage, quickRulesPage, reportsPage, ruleFormPage, rulesPage, settingsPage, type AuditRow, type FormularyFileRow, type ReportListRow, type UserRow } from '../views/pages.js';
 
 const numOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isFinite(n), 'número inválido');
 const intOpt = z.string().trim().default('').transform((s) => (s === '' ? null : Number(s))).refine((n) => n === null || Number.isInteger(n), 'inteiro inválido');
@@ -220,6 +221,47 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     return ok(reply, '/formulas', 'Item excluído.');
   });
 
+  /* ------------------------------------------------------ modelos de conduta */
+  const TemplateBody = z.object({ name: z.string().trim().min(2).max(160), profile: z.string().trim().max(3000).default(''), triggers: z.string().default(''), items: z.string().default(''), status: z.enum(['ativo', 'inativo']) });
+  const parseTriggers = (text: string) => text.split(/\r?\n/).map((l) => l.trim().toLowerCase()).filter(Boolean);
+  const parseItems = (text: string) => text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).map((l) => {
+    const [kind = 'outro', title = '', rationale = ''] = l.split('|').map((x) => x.trim());
+    return { kind: kind in CONDUCT_KIND_LABEL_UI ? kind : 'outro', title: title.slice(0, 200), rationale: rationale.slice(0, 1000) };
+  }).filter((i) => i.title);
+  app.get('/modelos', async (request, reply) => page(request, reply, 'Modelos de conduta', templatesPage(allTemplates())));
+  app.get('/modelos/novo', async (request, reply) => page(request, reply, 'Novo modelo', templateFormPage(null, null)));
+  app.get('/modelos/:id', async (request, reply) => {
+    const row = getDb().prepare('SELECT * FROM conduct_templates WHERE id = ?').get(Number((request.params as { id: string }).id)) as Row | undefined;
+    if (!row) return reply.code(404).send('Modelo não encontrado');
+    return page(request, reply, 'Modelo', templateFormPage(rowToTemplate(row), null));
+  });
+  const saveTemplate = async (request: FastifyRequest, reply: FastifyReply, id: number | null) => {
+    const parsed = TemplateBody.safeParse(request.body);
+    const current = id ? (getDb().prepare('SELECT * FROM conduct_templates WHERE id = ?').get(id) as Row | undefined) : undefined;
+    if (id && !current) return reply.code(404).send('Modelo não encontrado');
+    if (!parsed.success) return page(request, reply, 'Modelo', templateFormPage(current ? rowToTemplate(current) : null, firstIssue(parsed.error)));
+    const d = parsed.data;
+    const triggers = parseTriggers(d.triggers);
+    const valid = new Set([...CLASSIFICATIONS, 'critico']);
+    const bad = triggers.find((t) => !/^[a-z0-9_]+:[a-z_]+$/.test(t) || !valid.has(t.split(':')[1] ?? ''));
+    if (bad) return page(request, reply, 'Modelo', templateFormPage(current ? rowToTemplate(current) : null, `gatilho inválido: ${bad} (use exame:classificação)`));
+    const items = parseItems(d.items);
+    if (!items.length) return page(request, reply, 'Modelo', templateFormPage(current ? rowToTemplate(current) : null, 'informe ao menos um item (tipo | título | justificativa)'));
+    let tid = id;
+    if (id) getDb().prepare("UPDATE conduct_templates SET name=?, profile=?, triggers=?, items=?, status=?, updated_at=datetime('now') WHERE id=?").run(d.name, d.profile, triggers.join('|'), JSON.stringify(items), d.status, id);
+    else tid = Number(getDb().prepare('INSERT INTO conduct_templates(name, profile, triggers, items, status, created_by) VALUES (?, ?, ?, ?, ?, ?)').run(d.name, d.profile, triggers.join('|'), JSON.stringify(items), d.status, request.user?.id ?? null).lastInsertRowid);
+    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'conduct_template', tid, { name: d.name, items: items.length, triggers }, request.id);
+    return ok(reply, '/modelos', `Modelo "${d.name}" salvo (${d.status}).`);
+  };
+  app.post('/modelos', async (request, reply) => saveTemplate(request, reply, null));
+  app.post('/modelos/:id', async (request, reply) => saveTemplate(request, reply, Number((request.params as { id: string }).id)));
+  app.post('/modelos/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id);
+    getDb().prepare('DELETE FROM conduct_templates WHERE id = ?').run(id);
+    audit(request.user?.id ?? null, 'excluir', 'conduct_template', id, null, request.id);
+    return ok(reply, '/modelos', 'Modelo excluído.');
+  });
+
   /* ------------------------------------------------------------- relatórios */
   const reportsList = (): ReportListRow[] => (getDb().prepare('SELECT a.id AS analysis_id, a.case_id, a.score, a.created_at, a.finalized_at, a.ai_used, c.patient_code, c.patient_name FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.deleted_at IS NULL ORDER BY a.id DESC LIMIT 200').all() as Row[]).map((r) => ({ analysis_id: num(r, 'analysis_id'), case_id: num(r, 'case_id'), patient_code: str(r, 'patient_code'), patient_name: str(r, 'patient_name'), score: numOrNull(r, 'score'), created_at: str(r, 'created_at'), finalized_at: strOrNull(r, 'finalized_at'), ai_used: num(r, 'ai_used') === 1 }));
   app.get('/relatorios', async (request, reply) => page(request, reply, 'Relatórios', reportsPage(reportsList(), reportSettings(), null, request.user?.role === 'admin')));
@@ -235,14 +277,6 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     setSetting('report.logo', `${kind}-${Date.now()}`);
     audit(request.user?.id ?? null, 'logo', 'settings', 'relatorios', { kind, size: buf.length }, request.id);
     return ok(reply, '/relatorios', 'Logo atualizada.');
-  });
-
-  app.get('/branding/logo', async (_request, reply) => {
-    const f = fs.readdirSync(BRAND_DIR).find((x) => x.startsWith('logo.'));
-    if (!f) return reply.code(404).send('sem logo');
-    const ext = f.split('.').pop();
-    const type = ext === 'png' ? 'image/png' : ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/svg+xml';
-    return reply.type(type).header('Cache-Control', 'private, max-age=86400').send(fs.readFileSync(path.join(BRAND_DIR, f)));
   });
 
   app.post('/relatorios/config', { preHandler: requireAdmin }, async (request, reply) => {

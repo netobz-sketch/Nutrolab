@@ -70,7 +70,7 @@ function friendly(ev: Evaluation): { text: string; color: string } {
   }
 }
 
-export function patientVisualPanel(score: Score, evals: Evaluation[]): string {
+export function patientVisualPanel(score: Score, evals: Evaluation[], previous: Map<string, { raw: string; unit: string; date: string }> = new Map()): string {
   const comparable = evals.filter((e) => e.rule && e.classification !== 'sem_alvo' && e.classification !== 'nao_comparavel' && e.classification !== 'regra_ambigua');
   const ok = comparable.filter((e) => e.classification === 'dentro_do_alvo' || e.classification === 'qualitativo_compativel').length;
   const near = comparable.filter((e) => (e.classification === 'abaixo_do_alvo' || e.classification === 'acima_do_alvo') && e.normality === 'dentro' && !e.critical).length;
@@ -85,7 +85,9 @@ export function patientVisualPanel(score: Score, evals: Evaluation[]): string {
       const f = friendly(e);
       const name = e.result.exam_raw;
       const val = `${e.result.value_raw}${e.result.unit_raw ? ` ${e.result.unit_raw}` : ''}`;
-      return `<div style="padding:8px 0;border-top:1px solid ${C.line}"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><span style="font-weight:600;font-size:13.5px">${h(name)}</span><span style="font-size:13px;white-space:nowrap"><b>${h(val)}</b> · <span style="color:${f.color}">${f.text}</span></span></div>${examBar(e)}</div>`;
+      const prev = e.exam_canonical ? previous.get(e.exam_canonical) : undefined;
+      const prevTxt = prev && prev.date !== e.result.collection_date ? `<div style="font-size:11.5px;color:${C.muted}">anterior: ${h(prev.raw)} ${h(prev.unit)} em ${prev.date.slice(8, 10)}/${prev.date.slice(5, 7)}/${prev.date.slice(0, 4)}</div>` : '';
+      return `<div style="padding:8px 0;border-top:1px solid ${C.line}"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><span style="font-weight:600;font-size:13.5px">${h(name)}</span><span style="font-size:13px;white-space:nowrap"><b>${h(val)}</b> · <span style="color:${f.color}">${f.text}</span></span></div>${prevTxt}${examBar(e)}</div>`;
     }).join('');
     return `<div style="break-inside:avoid;background:#fff;border:1px solid ${C.line};border-radius:12px;padding:12px 14px;min-width:0"><div style="display:flex;gap:12px;align-items:center"><div>${miniGauge(s.score)}</div><div style="min-width:0"><div style="font-weight:700;font-size:15px">${h(s.label)}</div><div style="font-size:12.5px;color:${s.score >= 80 ? '#15803d' : s.score >= 60 ? '#b45309' : '#b91c1c'};font-weight:600">${bandLabel(s.score)}</div><div style="font-size:12px;color:${C.muted}">${s.n} exame${s.n === 1 ? '' : 's'}</div></div></div>${rows}</div>`;
   }).join('');

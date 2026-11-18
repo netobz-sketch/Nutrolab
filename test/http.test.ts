@@ -337,3 +337,81 @@ test('fórmulas: anexo de formulário .docx aceito, .txt rejeitado; logo da clí
   assert.match(print.body, /\/branding\/logo/);
   assert.match(print.body, /Clínica Teste/);
 });
+
+test('pacientes: cadastro, consentimento LGPD, caso vinculado, evolução entre coletas', async () => {
+  const logoLogin = await app.inject({ method: 'GET', url: '/login', headers: H });
+  assert.match(logoLogin.body, /\/branding\/logo\?v=png-/);
+  const list = await get('/pacientes');
+  assert.equal(list.statusCode, 200);
+  assert.match(list.body, /P-0001/);
+  const created = await post('/pacientes', { name: 'João Evolução', code: 'EVO-1', birth_date: '1980-01-15', sex: 'M', phone: '11 99999-0000', comorbidities: 'HAS' });
+  assert.equal(created.statusCode, 302);
+  const pid = Number(/\/pacientes\/(\d+)/.exec(created.headers.location ?? '')?.[1]);
+  assert.ok(pid > 0);
+  let ficha = await get(`/pacientes/${pid}`);
+  assert.match(ficha.body, /LGPD pendente/);
+  assert.match(ficha.body, /Imprimir termo/);
+  const termo = await get(`/pacientes/${pid}/termo`);
+  assert.equal(termo.statusCode, 200);
+  assert.match(termo.body, /João Evolução/);
+  assert.match(termo.body, /Lei nº 13\.709\/2018/);
+  const cm = multipart([{ name: 'file', filename: 'termo.pdf', type: 'application/pdf', data: Buffer.from('%PDF-1.4\n%fake\n') }]);
+  const body = Buffer.concat([Buffer.from(`------nutrolabtest\r\nContent-Disposition: form-data; name="status"\r\n\r\nassinado\r\n------nutrolabtest\r\nContent-Disposition: form-data; name="method"\r\n\r\npapel assinado\r\n------nutrolabtest\r\nContent-Disposition: form-data; name="date"\r\n\r\n2026-11-18\r\n`), cm.body]);
+  const consent = await app.inject({ method: 'POST', url: `/pacientes/${pid}/consentimento`, headers: { ...H, cookie, 'content-type': cm.type }, payload: body });
+  assert.equal(consent.statusCode, 302);
+  ficha = await get(`/pacientes/${pid}`);
+  assert.match(ficha.body, /LGPD assinado/);
+  assert.match(ficha.body, /Ver termo assinado/);
+  // dois casos do mesmo paciente com vitamina D em datas diferentes
+  for (const [date, value] of [['2026-05-10', '18'], ['2026-11-10', '34']]) {
+    const nc = await post('/casos', { patient_id: String(pid), patient_name: '', sex: 'M', birth_date: '1980-01-15', contexts: ['jejum'] });
+    assert.equal(nc.statusCode, 302);
+    const cid = Number(/\/casos\/(\d+)/.exec(nc.headers.location ?? '')?.[1]);
+    const page = await get(`/casos/${cid}`);
+    assert.match(page.body, /João Evolução/);
+    await post(`/casos/${cid}/resultados`, { exam_raw: '25-Hidroxi Vitamina D', value_raw: value ?? '', unit_raw: 'ng/mL', collection_date: date ?? '', confidence: 'alta', page: '', source_file: '', lab_reference: '', lab_flag: '' });
+    const conf = await get(`/casos/${cid}/conferencia`);
+    const rid = /include_(\d+)/.exec(conf.body)?.[1];
+    await post(`/casos/${cid}/conferencia`, { action: 'ok_todos', [`exam_raw_${rid}`]: '25-Hidroxi Vitamina D', [`value_raw_${rid}`]: value ?? '', [`unit_raw_${rid}`]: 'ng/mL', [`include_${rid}`]: '1', [`collection_date_${rid}`]: date ?? '' });
+    const an = await post(`/casos/${cid}/analisar`, {});
+    assert.equal(an.statusCode, 302);
+  }
+  ficha = await get(`/pacientes/${pid}`);
+  assert.match(ficha.body, /Evolução entre coletas/);
+  assert.match(ficha.body, /aria-label="Evolução"/);
+  assert.match(ficha.body, /Score ao longo do tempo/);
+  // painel do segundo caso mostra o valor anterior
+  const cases = await get(`/pacientes/${pid}`);
+  const lastCase = Math.max(...[...cases.body.matchAll(/\/casos\/(\d+)"/g)].map((m) => Number(m[1])));
+  const an2 = await get(`/casos/${lastCase}`);
+  const aid = /analises\/(\d+)/.exec(an2.body)?.[1];
+  const view = await get(`/casos/${lastCase}/analises/${aid}`);
+  assert.match(view.body, /anterior: 18 ng\/mL em 10\/05\/2026/);
+});
+
+test('modelos de conduta: criar, gatilho casa com o caso, aplicar, salvar a partir da conduta', async () => {
+  const bad = await post('/modelos', { name: 'Teste', profile: '', triggers: 'vitamina_d_25oh:qualquer', items: 'seguimento | Repetir | x', status: 'ativo' });
+  assert.match(bad.body, /gatilho inválido/);
+  const created = await post('/modelos', { name: 'Vitamina D baixa', profile: 'Deficiência de vitamina D', triggers: 'vitamina_d_25oh:abaixo_do_alvo', items: 'suplementacao | Vitamina D3 | 25(OH)D abaixo do alvo\nseguimento | Repetir 25(OH)D em 3 meses | acompanhar', status: 'ativo' });
+  assert.equal(created.statusCode, 302);
+  const listT = await get('/modelos');
+  assert.match(listT.body, /Vitamina D baixa/);
+  const tid = /\/modelos\/(\d+)"/.exec(listT.body)?.[1];
+  const conduct = await get('/casos/1/analises/2/conduta');
+  assert.equal(conduct.statusCode, 200);
+  // análise 2 do caso 1 está finalizada; reabrir para aplicar
+  await post('/casos/1/analises/2/finalizar', { action: 'reabrir' });
+  const conduct2 = await get('/casos/1/analises/2/conduta');
+  assert.match(conduct2.body, /Combinam com este caso/);
+  const applied = await post('/casos/1/analises/2/conduta/modelo', { template_id: tid ?? '' });
+  assert.equal(applied.statusCode, 302);
+  const after = await get('/casos/1/analises/2/conduta');
+  assert.match(after.body, /Repetir 25\(OH\)D em 3 meses/);
+  assert.match(after.body, /modelo: Vitamina D baixa/);
+  const saveAs = await post('/casos/1/analises/2/conduta/salvar-modelo', {});
+  assert.equal(saveAs.statusCode, 302);
+  assert.match(saveAs.headers.location ?? '', /^\/modelos\/\d+/);
+  const newT = await get((saveAs.headers.location ?? '').split('?')[0] ?? '');
+  assert.match(newT.body, /Modelo do caso #1/);
+  assert.match(newT.body, /vitamina_d_25oh:abaixo_do_alvo/);
+});

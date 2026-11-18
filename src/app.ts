@@ -8,6 +8,7 @@ import { openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { casesRoutes } from './routes/cases.routes.js';
 import { configRoutes } from './routes/config.routes.js';
+import { patientsRoutes } from './routes/patients.routes.js';
 import { integrationRoutes } from './integration.js';
 
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -61,6 +62,7 @@ app.get('/health', async () => ({ status: 'ok', ai: aiEnabled() ? AI_MODEL : 'of
 await app.register(authRoutes);
 await app.register(casesRoutes);
 await app.register(configRoutes);
+await app.register(patientsRoutes);
 await app.register(integrationRoutes, { prefix: '/api/integration' });
 
 app.setNotFoundHandler(async (_request, reply) => reply.code(404).type('text/html; charset=utf-8').send('<p>Página não encontrada. <a href="/casos">Voltar</a></p>'));

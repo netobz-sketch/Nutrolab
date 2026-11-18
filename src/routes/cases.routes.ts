@@ -10,6 +10,9 @@ import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS
 import { renderMarkdown } from '../markdown.js';
 import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, type ConductItem, type ReportInput } from '../report.js';
 import { patientVisualPanel } from '../visuals.js';
+import { previousValues } from '../evolution.js';
+import { allPatients, loadPatient } from './patients.routes.js';
+import { allTemplates, nextPatientCode as nextCode, rowToPatient, type Patient } from '../db.js';
 import { h, layout } from '../views/html.js';
 import { analysisPage, caseFormPage, caseFormulasPage, casePage, casesPage, conductPage, conferencePage, type AnalysisRow, type CaseRow, type ConductRow, type FileRow, type ResultRow } from '../views/pages.js';
 import type { Score } from '../engine/index.js';
@@ -27,6 +30,7 @@ function sniffMime(buf: Buffer): FileMime | null {
 }
 
 const CaseBody = z.object({
+  patient_id: z.string().trim().regex(/^\d*$/).default(''),
   patient_code: z.string().trim().max(40).regex(/^[\w.\-/ ]*$/u, 'use só letras, números, ponto, traço ou barra').default(''),
   patient_name: z.string().trim().max(120).default(''),
   menopause: z.enum(['', 'nao', 'peri', 'pos']).default(''),
@@ -73,6 +77,7 @@ export function effectiveContexts(contexts: string[], menopause: string): string
 export function rowToCase(row: Row): CaseRow {
   return {
     id: num(row, 'id'),
+    patient_id: numOrNull(row, 'patient_id'),
     patient_code: str(row, 'patient_code'),
     patient_name: str(row, 'patient_name'),
     complaints: list(str(row, 'complaints')),
@@ -263,18 +268,42 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return page(request, reply, 'Casos', casesPage(rows.map(rowToCase), tableVersion(), aiEnabled()));
   });
 
-  app.get('/casos/novo', async (request, reply) => page(request, reply, 'Novo caso', caseFormPage(null, null)));
+  app.get('/casos/novo', async (request, reply) => {
+    const pid = Number((request.query as { paciente?: string }).paciente ?? 0) || null;
+    const p = pid ? loadPatient(pid) : null;
+    let prefill: CaseRow | null = null;
+    if (p) {
+      const last = getDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id) as Row | undefined;
+      const base = last ? rowToCase(last) : null;
+      prefill = { id: 0, patient_id: p.id, patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
+    }
+    const body = caseFormPage(prefill, null, allPatients(), p?.id ?? null).replace('action="/casos/0/editar"', 'action="/casos"');
+    return page(request, reply, 'Novo caso', body, p && p.consent_status !== 'assinado' ? { kind: 'warn', text: 'Este paciente ainda não tem consentimento LGPD registrado como assinado.' } : null);
+  });
 
   app.post('/casos', async (request, reply) => {
     const parsed = CaseBody.safeParse(request.body);
-    if (!parsed.success) return page(request, reply, 'Novo caso', caseFormPage(null, parsed.error.issues[0]?.message ?? 'Dados inválidos.'));
+    if (!parsed.success) return page(request, reply, 'Novo caso', caseFormPage(null, parsed.error.issues[0]?.message ?? 'Dados inválidos.', allPatients(), null));
     const d = parsed.data;
+    // paciente: existente ou criado a partir do nome
+    let patient: Patient | null = d.patient_id ? loadPatient(Number(d.patient_id)) : null;
+    if (!patient) {
+      const code = d.patient_code || nextCode();
+      const name = d.patient_name.trim() || `Paciente ${code}`;
+      const existing = getDb().prepare('SELECT * FROM patients WHERE code = ? AND deleted_at IS NULL').get(code) as Row | undefined;
+      if (existing) patient = rowToPatient(existing);
+      else {
+        const pid = Number(getDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, name, d.birth_date || null, d.sex || null, d.comorbidities, d.medications, d.supplements, d.goal, request.user?.id ?? null).lastInsertRowid);
+        patient = loadPatient(pid);
+        audit(request.user?.id ?? null, 'criar', 'patient', pid, { code, via: 'caso' }, request.id);
+      }
+    }
+    if (!patient) return reply.code(500).send('Falha ao vincular paciente');
     const info = getDb()
-      .prepare('INSERT INTO cases(patient_code, patient_name, menopause, complaints, ai_notes, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(d.patient_code || 'novo', d.patient_name, d.menopause, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || null, d.birth_date || null, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null);
+      .prepare('INSERT INTO cases(patient_id, patient_code, patient_name, menopause, complaints, ai_notes, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(patient.id, patient.code, patient.name, d.menopause, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || patient.sex, d.birth_date || patient.birth_date, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null);
     const id = Number(info.lastInsertRowid);
-    if (!d.patient_code) getDb().prepare('UPDATE cases SET patient_code = ? WHERE id = ?').run(`P-${String(id).padStart(4, '0')}`, id);
-    audit(request.user?.id ?? null, 'criar', 'case', id, { patient_code: d.patient_code || `P-${String(id).padStart(4, '0')}` }, request.id);
+    audit(request.user?.id ?? null, 'criar', 'case', id, { patient_id: patient.id, patient_code: patient.code }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Caso criado. Etapa 2: anexe os exames (PDF ou imagem) e extraia.');
   });
 
@@ -520,7 +549,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
-    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals]) : '');
+    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id)) : '');
     return page(request, reply, `Análise #${aid}`, analysisPage({
       c, analysis, score: storedScore,
       patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
@@ -540,7 +569,9 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!c || !row || !analysis) return reply.code(404).send('Análise não encontrada');
     const { evals, profile } = evaluateCase(c, loadResults(Number(id)));
     const searchNote = getSettingLocal(`conduct.search.${aid}`);
-    return page(request, reply, 'Conduta', conductPage({ c, analysis, items: loadConduct(Number(aid)), doctorNotes: c.doctor_notes, aiOn: aiEnabled(), criticalQuery: criticalQuery(evals, profile), error, searchNote }));
+    const hits = new Set(evals.filter((e) => e.exam_canonical).flatMap((e) => [`${e.exam_canonical}:${e.classification}`, ...(e.critical ? [`${e.exam_canonical}:critico`] : [])]));
+    const templates = allTemplates().filter((t) => t.status === 'ativo').map((t) => ({ id: t.id, name: t.name, profile: t.profile, items: t.items.length, matches: t.triggers.length > 0 && t.triggers.every((x) => hits.has(x)) }));
+    return page(request, reply, 'Conduta', conductPage({ c, analysis, items: loadConduct(Number(aid)), doctorNotes: c.doctor_notes, aiOn: aiEnabled(), criticalQuery: criticalQuery(evals, profile), error, searchNote, templates }));
   };
   const getSettingLocal = (key: string): string | null => {
     const r = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined;
@@ -559,7 +590,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const { evals, profile, derived, guidances, score } = evaluateCase(c, loadResults(Number(id)));
     try {
       const library = allGuidances().filter((g) => g.status === 'ativo').map((g) => ({ codigo: g.code, titulo: g.title, exame: g.exam_canonical, gatilho: g.trigger, texto: g.patient_text }));
-      const { conduct, searches } = await suggestConduct({ ...reportPayload(c, profile, evals, derived, guidances, score), biblioteca_do_medico: library }, Number(id));
+      const templates = allTemplates().filter((t) => t.status === 'ativo').map((t) => ({ nome: t.name, perfil: t.profile, gatilhos: t.triggers, itens: t.items }));
+      const { conduct, searches } = await suggestConduct({ ...reportPayload(c, profile, evals, derived, guidances, score), biblioteca_do_medico: library, modelos_de_conduta_do_medico: templates }, Number(id));
       const insert = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, sources, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, 'ia', 'sugerida', ?)");
       let pos = loadConduct(Number(aid)).length;
       for (const item of conduct.itens) {
@@ -573,6 +605,40 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       request.log.error({ err: error }, 'falha na sugestão de conduta');
       return conductView(request, reply, error instanceof AiError ? error.message : 'Falha inesperada ao sugerir conduta.');
     }
+  });
+
+  app.post('/casos/:id/analises/:aid/conduta/modelo', async (request, reply) => {
+    const { id, aid } = request.params as { id: string; aid: string };
+    const c = loadCase(Number(id));
+    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    if (!c || !row) return reply.code(404).send('Análise não encontrada');
+    if (strOrNull(row, 'finalized_at')) return conductView(request, reply, 'Relatório já finalizado.');
+    const tid = Number((request.body as { template_id?: string } | null)?.template_id ?? 0);
+    const t = allTemplates().find((x) => x.id === tid && x.status === 'ativo');
+    if (!t) return conductView(request, reply, 'Modelo não encontrado.');
+    const insert = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, ?, ?, ?, 'biblioteca', 'sugerida', ?)");
+    let pos = loadConduct(Number(aid)).length;
+    for (const it of t.items) {
+      insert.run(Number(id), Number(aid), it.kind in CONDUCT_KIND_LABEL ? it.kind : 'outro', it.title.slice(0, 200), `${it.rationale} (modelo: ${t.name})`.slice(0, 3000), pos);
+      pos += 1;
+    }
+    audit(request.user?.id ?? null, 'aplicar_modelo', 'analysis', Number(aid), { template_id: t.id, items: t.items.length }, request.id);
+    return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`Modelo "${t.name}" aplicado: ${t.items.length} item(ns) para revisar.`)}`);
+  });
+
+  app.post('/casos/:id/analises/:aid/conduta/salvar-modelo', async (request, reply) => {
+    const { id, aid } = request.params as { id: string; aid: string };
+    const c = loadCase(Number(id));
+    if (!c || !loadAnalysis(Number(id), Number(aid))) return reply.code(404).send('Análise não encontrada');
+    const approved = loadConduct(Number(aid)).filter((i) => i.status === 'aprovada');
+    if (!approved.length) return conductView(request, reply, 'Aprove ao menos um item antes de salvar como modelo.');
+    const { evals } = evaluateCase(c, loadResults(Number(id)));
+    const triggers = evals.filter((e) => e.exam_canonical && ['abaixo_do_alvo', 'acima_do_alvo'].includes(e.classification)).map((e) => `${e.exam_canonical}:${e.classification}`).slice(0, 6);
+    const items = approved.map((i) => ({ kind: i.kind, title: i.title, rationale: i.rationale.split('\n')[0] ?? '' }));
+    const name = `Modelo do caso #${id} (${new Date().toISOString().slice(0, 10)})`;
+    const tid = Number(getDb().prepare("INSERT INTO conduct_templates(name, profile, triggers, items, status, created_by) VALUES (?, ?, ?, ?, 'inativo', ?)").run(name, '', triggers.join('|'), JSON.stringify(items), request.user?.id ?? null).lastInsertRowid);
+    audit(request.user?.id ?? null, 'criar', 'conduct_template', tid, { from_analysis: Number(aid), items: items.length }, request.id);
+    return reply.redirect(`/modelos/${tid}?kind=ok&msg=${encodeURIComponent('Modelo criado a partir da conduta aprovada. Dê um nome, descreva o perfil, revise os gatilhos e ative.')}`);
   });
 
   app.post('/casos/:id/analises/:aid/conduta/novo', async (request, reply) => {
@@ -712,7 +778,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
     if (score) {
       const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
-      top = patientVisualPanel(score, [...evals, ...derivedEvals]);
+      top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id));
     }
     top = brandHeader() + top;
     return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: top + renderMarkdown(md), print: true }));

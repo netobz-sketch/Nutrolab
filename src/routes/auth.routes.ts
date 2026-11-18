@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate, authenticateProfessional, consumeReset, updateProfile, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
-import { audit, getDb, type Row } from '../db.js';
+import { audit, BRAND_DIR, getDb, type Row } from '../db.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
 import { forgotPage, profilePage, resetPage } from '../views/pages.js';
 import { normalizeText } from '../engine/index.js';
@@ -28,6 +30,15 @@ function safeNext(next: string | undefined): string {
 }
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  // Logo da clínica: pública (aparece na tela de login).
+  app.get('/branding/logo', async (_request, reply) => {
+    const f = fs.readdirSync(BRAND_DIR).find((x) => x.startsWith('logo.'));
+    if (!f) return reply.code(404).send('sem logo');
+    const ext = f.split('.').pop();
+    const type = ext === 'png' ? 'image/png' : ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/svg+xml';
+    return reply.type(type).header('Cache-Control', 'public, max-age=86400').send(fs.readFileSync(path.join(BRAND_DIR, f)));
+  });
+
   app.get('/login', async (request, reply) => {
     if (request.user) return reply.redirect('/casos');
     const q = request.query as { next?: string; modo?: string };

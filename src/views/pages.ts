@@ -2,12 +2,13 @@ import { CALCS, CLASSIFICATIONS, CLASSIFICATION_LABEL, COMPLAINTS, CONTEXTS, for
 import type { Score } from '../engine/index.js';
 import type { SessionUser } from '../auth.js';
 import { formatCpf } from '../cpf.js';
-import type { Formula } from '../db.js';
+import type { ConductTemplate, Formula, Patient } from '../db.js';
 import type { Evaluation, Guidance, Rule } from '../engine/index.js';
-import { attr, fmtDate, h, icon, option, statusTag } from './html.js';
+import { attr, brandMark, fmtDate, h, icon, option, statusTag } from './html.js';
 
 export interface CaseRow {
   id: number;
+  patient_id: number | null;
   patient_code: string;
   patient_name: string;
   complaints: string[];
@@ -48,7 +49,7 @@ export function loginPage(error: string | null, next: string, mode: 'profissiona
 <p><button class="btn" type="submit" style="width:100%">Entrar</button></p></form>
 <p class="muted small" style="margin:0 0 8px">A verificação automática do registro no conselho será ativada em breve; por ora, o acesso é restrito a profissionais cadastrados pelo administrador.</p>
 <p style="text-align:center;margin:0 0 6px"><a href="/login?modo=email" class="small">Entrar com e-mail e senha</a></p>`;
-  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a>
+  return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a>
 <h1 style="text-align:center;font-size:20px">${mode === 'email' ? 'Entrar' : 'Acesso profissional'}</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}
 ${form}
 <p style="text-align:center;margin:0 0 10px"><a href="/esqueci" class="small">Esqueci a senha</a></p>
@@ -76,11 +77,11 @@ export function forgotPage(message: string | null, mailOn: boolean, done = false
   const body = mailOn
     ? `<form method="post" action="/esqueci"><label>E-mail cadastrado</label><input name="email" type="email" required autofocus><p><button class="btn" type="submit" style="width:100%">Enviar link de redefinição</button></p></form>`
     : `<p>O envio de e-mail ainda não está configurado neste servidor. Peça ao administrador um <b>link de redefinição</b> (ele gera em Configurações → Usuários e envia para você por mensagem).</p>`;
-  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a><h1 style="text-align:center;font-size:20px">Esqueci a senha</h1>${message ? `<div class="flash ${done ? 'ok' : 'err'}">${h(message)}</div>` : ''}${done ? '' : body}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
+  return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a><h1 style="text-align:center;font-size:20px">Esqueci a senha</h1>${message ? `<div class="flash ${done ? 'ok' : 'err'}">${h(message)}</div>` : ''}${done ? '' : body}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
 }
 
 export function resetPage(token: string, error: string | null, dead: boolean): string {
-  return `<div class="card"><a class="brand" href="/login"><span class="logo">${icon('logo')}</span>NutroLab</a><h1 style="text-align:center;font-size:20px">Definir nova senha</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}${dead ? '' : `<form method="post" action="/redefinir/${attr(token)}"><label>Nova senha (mín. 10 caracteres)</label><input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus><label>Confirmar nova senha</label><input name="confirm" type="password" autocomplete="new-password" required><p><button class="btn" type="submit" style="width:100%">Salvar e entrar</button></p></form>`}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
+  return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a><h1 style="text-align:center;font-size:20px">Definir nova senha</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}${dead ? '' : `<form method="post" action="/redefinir/${attr(token)}"><label>Nova senha (mín. 10 caracteres)</label><input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus><label>Confirmar nova senha</label><input name="confirm" type="password" autocomplete="new-password" required><p><button class="btn" type="submit" style="width:100%">Salvar e entrar</button></p></form>`}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
 }
 
 export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean): string {
@@ -98,14 +99,16 @@ function contextChips(selected: string[], name = 'contexts'): string {
   return `<div class="chips">${Object.entries(CONTEXTS).filter(([k]) => k !== 'geral').map(([k, label]) => `<label><input type="checkbox" name="${name}" value="${k}"${selected.includes(k) ? ' checked' : ''}>${h(label)}</label>`).join('')}</div>`;
 }
 
-export function caseFormPage(c: CaseRow | null, error: string | null): string {
+export function caseFormPage(c: CaseRow | null, error: string | null, patients: Patient[] = [], selectedPatient: number | null = null): string {
   const v = (k: keyof CaseRow) => (c ? attr(c[k] ?? '') : '');
+  const patientSelect = `<div style="grid-column:span 2"><label>Paciente</label><select name="patient_id">${option('', 'novo paciente (usa o nome abaixo)', selectedPatient ? String(selectedPatient) : '')}${patients.map((p) => option(String(p.id), `${p.name} · ${p.code}${p.consent_status !== 'assinado' ? ' · LGPD pendente' : ''}`, selectedPatient ? String(selectedPatient) : '')).join('')}</select><p class="muted small">Escolha um paciente cadastrado para reaproveitar histórico e consentimento, ou deixe em branco para criar um novo com o nome abaixo.</p></div>`;
   const complaintChips = `<div class="chips">${Object.entries(COMPLAINTS).map(([k, label]) => `<label><input type="checkbox" name="complaints" value="${k}"${c?.complaints.includes(k) ? ' checked' : ''}>${h(label)}</label>`).join('')}</div>`;
   const meno = c?.menopause ?? '';
   return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / ${c ? h(c.patient_code) : 'novo'}</div><h1>${c ? 'Pré-questionário' : 'Novo caso: pré-questionário'}</h1><div class="sub">Etapa 1 de 5. Estes dados orientam a interpretação e a redação; só o que estiver confirmado deve ser marcado.</div></div></div>
 ${error ? `<div class="flash err">${h(error)}</div>` : ''}
 <form method="post" action="${c ? `/casos/${c.id}/editar` : '/casos'}">
 <div class="card"><h2 style="margin-top:0">Identificação</h2><div class="grid">
+${c ? '' : patientSelect}
 <div><label>Nome do paciente</label><input name="patient_name" maxlength="120" value="${v('patient_name')}" placeholder="nome completo"></div>
 <div><label>Código (pseudônimo nos arquivos)</label><input name="patient_code" maxlength="40" value="${v('patient_code')}" placeholder="automático se vazio"></div>
 <div><label>Data de nascimento</label><input name="birth_date" type="date" value="${v('birth_date')}"></div>
@@ -159,7 +162,7 @@ export function casePage(opts: { c: CaseRow; files: FileRow[]; results: ResultRo
 <span class="small"><b>4</b> Relatório + score ${analyses.length ? '✓' : ''}</span><span class="muted">›</span>
 <span class="small"><b>5</b> Conduta e relatório final ${analyses.some((a) => a.finalized_at) ? '✓' : ''}</span></div></div>`;
   const statusForm = c.status === 'revisado' ? `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="aberto"><button class="btn sec" type="submit">Reabrir</button></form>` : `<form method="post" action="/casos/${c.id}/status" class="inline"><input type="hidden" name="status" value="revisado"><button class="btn sec" type="submit">Marcar como revisado</button></form>`;
-  return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / ${h(c.patient_code)}</div><h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Caso ${h(c.patient_code)} ${statusTag(c.status)}</h1><div class="sub">${h(sub)}</div></div><div class="actions"><a class="btn sec" href="/casos/${c.id}/editar">Editar</a>${statusForm}${opts.isAdmin ? `<form method="post" action="/casos/${c.id}/excluir" class="inline" onsubmit="return confirm('Excluir o caso, os PDFs e as análises? Esta ação não pode ser desfeita.')"><button class="btn danger" type="submit">Excluir caso</button></form>` : ''}</div></div>
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / ${c.patient_id ? `<a href="/pacientes/${c.patient_id}">${h(c.patient_name || c.patient_code)}</a>` : h(c.patient_code)} / caso #${c.id}</div><h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Caso #${c.id} · ${h(c.patient_name || c.patient_code)} ${statusTag(c.status)}</h1><div class="sub">${h(sub)}</div></div><div class="actions"><a class="btn sec" href="/casos/${c.id}/editar">Editar</a>${statusForm}${opts.isAdmin ? `<form method="post" action="/casos/${c.id}/excluir" class="inline" onsubmit="return confirm('Excluir o caso, os PDFs e as análises? Esta ação não pode ser desfeita.')"><button class="btn danger" type="submit">Excluir caso</button></form>` : ''}</div></div>
 
 ${stepper}
 <div class="kpis">
@@ -253,7 +256,7 @@ export function analysisPage(opts: { c: CaseRow; analysis: AnalysisRow; patientH
 <div class="card-body report" id="tecnico" style="border-top:1px solid var(--line)"><h2 style="margin-top:0;border:0;color:var(--muted);font-size:13px;letter-spacing:.06em;text-transform:uppercase">Relatório técnico${finalized ? ' (final)' : ' (minuta)'}</h2>${opts.finalTechnicalHtml ?? opts.technicalHtml}</div></div>`;
 }
 
-export function conductPage(opts: { c: CaseRow; analysis: AnalysisRow; items: ConductRow[]; doctorNotes: string; aiOn: boolean; criticalQuery: string; error: string | null; searchNote: string | null }): string {
+export function conductPage(opts: { c: CaseRow; analysis: AnalysisRow; items: ConductRow[]; doctorNotes: string; aiOn: boolean; criticalQuery: string; error: string | null; searchNote: string | null; templates?: Array<{ id: number; name: string; profile: string; items: number; matches: boolean }> }): string {
   const { c, analysis: a, items } = opts;
   const finalized = !!a.finalized_at;
   const kinds = Object.entries(CONDUCT_KIND_LABEL_UI);
@@ -267,11 +270,13 @@ ${i.sources.length ? `<div class="muted small" style="margin-top:6px">Fontes: ${
   return `<div class="pagehead"><div><div class="crumbs"><a href="/casos">Casos</a> / <a href="/casos/${c.id}">${h(c.patient_code)}</a> / <a href="/casos/${c.id}/analises/${a.id}">análise #${a.id}</a> / conduta</div><h1>Conduta e orientações ${finalized ? '<span class="tag revisado">final</span>' : ''}</h1><div class="sub">Etapa 5 de 5. A IA sugere; só o que você aprovar entra no relatório final. ${approved} aprovada(s), ${pending} pendente(s).</div></div>
 <div class="actions"><a class="btn sec" href="/casos/${c.id}/analises/${a.id}">Voltar à análise</a><a class="btn sec" href="/casos/${c.id}/analises/${a.id}/formulas">Fórmulas e medicamentos</a><a class="btn sec" href="${openEvidenceUrl(opts.criticalQuery)}" target="_blank" rel="noopener">Pesquisar no OpenEvidence</a>${finalized || !opts.aiOn ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/sugerir" class="inline"><button class="btn soft" type="submit" onclick="this.disabled=true;this.textContent='Pesquisando e redigindo...';this.form.submit()">Sugerir conduta com IA</button></form>`}</div></div>
 ${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
+${!finalized && opts.templates && opts.templates.length ? `<div class="card"><h2 style="margin-top:0">Modelos de conduta</h2>${opts.templates.filter((t) => t.matches).length ? `<div class="flash ok" style="margin-bottom:10px">Combinam com este caso: ${opts.templates.filter((t) => t.matches).map((t) => `<b>${h(t.name)}</b>`).join(', ')}.</div>` : ''}<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/modelo" class="actions"><select name="template_id" style="width:auto;min-width:260px">${opts.templates.map((t) => option(String(t.id), `${t.matches ? '★ ' : ''}${t.name} (${t.items} itens)`, opts.templates?.find((x) => x.matches)?.id === t.id ? String(t.id) : '')).join('')}</select><button class="btn sec" type="submit">Aplicar modelo</button><span class="muted small">Os itens entram como sugeridos, para você aprovar.</span></form></div>` : ''}
 ${opts.searchNote ? `<div class="card"><h2 style="margin-top:0">Pesquisa na literatura (resumo da IA)</h2><p class="muted small">A IA pesquisa em PubMed, diretrizes e fontes abertas. O OpenEvidence não oferece acesso automatizado; use o botão &quot;Pesquisar no OpenEvidence&quot; para a consulta direta com a pergunta já montada.</p><p style="margin:0;white-space:pre-line">${h(opts.searchNote)}</p></div>` : ''}
 ${items.map(row).join('') || '<div class="card muted">Nenhuma sugestão ainda. Clique em "Sugerir conduta com IA" ou adicione um item manualmente abaixo.</div>'}
 ${finalized ? '' : `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/novo" class="card"><h2 style="margin-top:0">Adicionar item manualmente</h2><div class="grid"><div><label>Tipo</label><select name="kind">${kinds.map(([k, l]) => option(k, l, 'seguimento')).join('')}</select></div><div style="grid-column:span 2"><label>Título</label><input name="title" required placeholder="ex.: Repetir vitamina D em 3 meses"></div></div><label>Justificativa</label><textarea name="rationale" style="min-height:60px"></textarea><p><button class="btn sec" type="submit">Adicionar (já aprovado)</button></p></form>`}
 <form method="post" action="/casos/${c.id}/analises/${a.id}/finalizar" class="card"><h2 style="margin-top:0">Observações do médico ao paciente</h2><textarea name="doctor_notes" style="min-height:110px"${finalized ? ' readonly' : ''}>${h(opts.doctorNotes)}</textarea>
-<p class="actions" style="margin-bottom:0">${finalized ? `<a class="btn" href="/casos/${c.id}/analises/${a.id}">Ver relatórios finais</a><button class="btn sec" type="submit" name="action" value="reabrir">Reabrir para editar</button>` : `<button class="btn" type="submit" name="action" value="finalizar" ${approved || opts.doctorNotes ? '' : ''}>Gerar relatório final (resumido + técnico)</button><span class="muted small">Entram só os itens aprovados e estas observações. Depois, imprima ou salve em PDF na página da análise.</span>`}</p></form>`;
+<p class="actions" style="margin-bottom:0">${finalized ? `<a class="btn" href="/casos/${c.id}/analises/${a.id}">Ver relatórios finais</a><button class="btn sec" type="submit" name="action" value="reabrir">Reabrir para editar</button>` : `<button class="btn" type="submit" name="action" value="finalizar">Gerar relatório final (resumido + técnico)</button><span class="muted small">Entram só os itens aprovados e estas observações. Depois, imprima ou salve em PDF na página da análise.</span>`}</p></form>
+${approved ? `<form method="post" action="/casos/${c.id}/analises/${a.id}/conduta/salvar-modelo" class="actions" style="margin-top:4px"><button class="btn sec sm" type="submit">Salvar conduta aprovada como modelo de perfil</button><span class="muted small">Cria um modelo reutilizável com os itens aprovados e os gatilhos deste caso.</span></form>` : ''}`;
 }
 
 const CONDUCT_KIND_LABEL_UI: Record<string, string> = {
@@ -501,4 +506,89 @@ ${opts.error ? `<div class="flash err">${h(opts.error)}</div>` : ''}
 ${opts.note ? `<div class="card"><b>Observação da IA:</b> ${h(opts.note)}</div>` : ''}
 ${sug || '<div class="card muted">Nenhuma sugestão ainda. Clique em "Sugerir com IA" (usa só os itens ativos do banco) ou adicione direto do banco abaixo.</div>'}
 <h2>Seu banco (itens ativos)</h2><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Item</th><th>Composição</th><th>Posologia</th><th></th></tr></thead><tbody>${bank || `<tr><td colspan="4" class="muted">Nenhum item ativo. Cadastre em <a href="/formulas">Fórmulas e medicamentos</a>.</td></tr>`}</tbody></table></div></div>`;
+}
+
+/* ============================== Pacientes ============================== */
+export interface PatientCaseRow { id: number; status: string; created_at: string; last_collection: string | null; results_count: number; score: number | null; analysis_id: number | null }
+
+const CONSENT_LABEL: Record<string, string> = { pendente: 'pendente', assinado: 'assinado', recusado: 'recusado', revogado: 'revogado' };
+function consentTag(status: string): string {
+  const cls = status === 'assinado' ? 'ativo' : status === 'pendente' ? 'rascunho' : 'inativo';
+  return `<span class="tag ${cls}">LGPD ${h(CONSENT_LABEL[status] ?? status)}</span>`;
+}
+
+export function patientsPage(patients: Patient[], query: string): string {
+  const rows = patients.map((p) => `<tr><td><a href="/pacientes/${p.id}" style="font-weight:600;text-decoration:none">${h(p.name)}</a><div class="muted small">${h(p.code)}</div></td><td>${h(p.sex ?? '—')}</td><td>${fmtDate(p.birth_date)}</td><td>${consentTag(p.consent_status)}</td><td class="muted small">${h(p.phone || p.email || '—')}</td><td><a class="btn sec sm" href="/casos/novo?paciente=${p.id}">Novo caso</a></td></tr>`).join('');
+  return `<div class="pagehead"><div><div class="crumbs">Pacientes</div><h1>Pacientes</h1><div class="sub">Cadastro único por paciente: questionário, consentimento LGPD, casos e evolução entre coletas.</div></div><a class="btn" href="/pacientes/novo">Novo paciente</a></div>
+<form method="get" action="/pacientes" class="actions" style="margin-bottom:12px"><input type="search" name="q" value="${attr(query)}" placeholder="Buscar por nome ou código" style="max-width:360px"><button class="btn sec" type="submit">Buscar</button></form>
+<div class="card flush"><div class="tablewrap"><table><thead><tr><th>Paciente</th><th>Sexo</th><th>Nascimento</th><th>Consentimento</th><th>Contato</th><th></th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">Nenhum paciente.</td></tr>'}</tbody></table></div></div>`;
+}
+
+export function patientFormPage(p: Patient | null, error: string | null, suggestedCode: string): string {
+  const v = (k: keyof Patient) => attr(p?.[k] ?? '');
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/pacientes">Pacientes</a> / ${p ? h(p.code) : 'novo'}</div><h1>${p ? 'Editar paciente' : 'Novo paciente'}</h1><div class="sub">Dados que se repetem entre os casos. O questionário de cada caso parte daqui.</div></div></div>
+${error ? `<div class="flash err">${h(error)}</div>` : ''}
+<form method="post" action="${p ? `/pacientes/${p.id}/editar` : '/pacientes'}">
+<div class="card"><h2 style="margin-top:0">Identificação</h2><div class="grid">
+<div style="grid-column:span 2"><label>Nome completo</label><input name="name" required maxlength="120" value="${v('name')}"></div>
+<div><label>Código (nos arquivos e relatórios técnicos)</label><input name="code" maxlength="40" value="${attr(p?.code ?? suggestedCode)}"></div>
+<div><label>Data de nascimento</label><input name="birth_date" type="date" value="${v('birth_date')}"></div>
+<div><label>Sexo biológico</label><select name="sex">${option('', 'não informado', p?.sex ?? '')}${option('F', 'Feminino', p?.sex ?? '')}${option('M', 'Masculino', p?.sex ?? '')}</select></div>
+<div><label>Telefone / WhatsApp</label><input name="phone" value="${v('phone')}"></div>
+<div><label>E-mail</label><input name="email" type="email" value="${v('email')}"></div>
+</div></div>
+<div class="card"><h2 style="margin-top:0">Histórico de base</h2><div class="grid">
+<div><label>Comorbidades / diagnósticos</label><textarea name="comorbidities">${h(p?.comorbidities ?? '')}</textarea></div>
+<div><label>Medicamentos em uso</label><textarea name="medications">${h(p?.medications ?? '')}</textarea></div>
+<div><label>Suplementos em uso</label><textarea name="supplements">${h(p?.supplements ?? '')}</textarea></div>
+<div><label>Objetivo terapêutico</label><textarea name="goal">${h(p?.goal ?? '')}</textarea></div>
+</div><label>Observações internas</label><textarea name="notes">${h(p?.notes ?? '')}</textarea></div>
+<p class="actions"><button class="btn" type="submit">${p ? 'Salvar' : 'Cadastrar'}</button><a class="btn sec" href="${p ? `/pacientes/${p.id}` : '/pacientes'}">Cancelar</a></p></form>`;
+}
+
+export function patientPage(opts: { p: Patient; cases: PatientCaseRow[]; evolution: string; isAdmin: boolean; consentVersion: string }): string {
+  const { p, cases } = opts;
+  const caseRows = cases.map((c) => `<tr><td><a href="/casos/${c.id}" style="font-weight:600;text-decoration:none">Caso #${c.id}</a></td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count}</td><td class="num">${c.score ?? '—'}</td><td>${statusTag(c.status)}</td><td>${c.analysis_id ? `<a class="btn sec sm" href="/casos/${c.id}/analises/${c.analysis_id}">Relatório</a>` : ''}</td></tr>`).join('');
+  const consentNeeded = p.consent_status !== 'assinado';
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/pacientes">Pacientes</a> / ${h(p.code)}</div><h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">${h(p.name)} ${consentTag(p.consent_status)}</h1><div class="sub">${h(p.sex === 'F' ? 'Feminino' : p.sex === 'M' ? 'Masculino' : 'sexo não informado')} · nascimento ${fmtDate(p.birth_date)}${p.phone ? ` · ${h(p.phone)}` : ''}${p.email ? ` · ${h(p.email)}` : ''}</div></div>
+<div class="actions"><a class="btn sec" href="/pacientes/${p.id}/editar">Editar</a><a class="btn" href="/casos/novo?paciente=${p.id}">Novo caso</a>${opts.isAdmin ? `<form method="post" action="/pacientes/${p.id}/excluir" class="inline" onsubmit="return confirm('Excluir o paciente, todos os casos, PDFs e o termo? Não pode ser desfeito.')"><button class="btn danger" type="submit">Excluir</button></form>` : ''}</div></div>
+${consentNeeded ? '<div class="flash warn">Consentimento LGPD ainda não registrado como assinado. Imprima o termo, colha a assinatura e registre abaixo antes de gerar relatórios.</div>' : ''}
+<div class="two">
+<div class="card"><h2 style="margin-top:0">Consentimento LGPD</h2>
+<div class="facts" style="margin-bottom:10px"><div><div class="k">Situação</div><div class="v">${h(CONSENT_LABEL[p.consent_status] ?? p.consent_status)}</div></div><div><div class="k">Data</div><div class="v">${fmtDate(p.consent_at)}</div></div><div><div class="k">Forma</div><div class="v">${h(p.consent_method || '—')}</div></div><div><div class="k">Versão do termo</div><div class="v">${h(p.consent_version || '—')}</div></div></div>
+<div class="actions" style="margin-bottom:10px"><a class="btn sec sm" href="/pacientes/${p.id}/termo" target="_blank" rel="noopener">Imprimir termo (v${h(opts.consentVersion)})</a>${p.consent_file ? `<a class="btn sec sm" href="/pacientes/${p.id}/consentimento/arquivo" target="_blank" rel="noopener">Ver termo assinado</a>` : ''}</div>
+<form method="post" action="/pacientes/${p.id}/consentimento" enctype="multipart/form-data"><div class="grid"><div><label>Situação</label><select name="status">${['assinado', 'pendente', 'recusado', 'revogado'].map((x) => option(x, CONSENT_LABEL[x] ?? x, p.consent_status === 'pendente' ? 'assinado' : p.consent_status)).join('')}</select></div><div><label>Forma</label><select name="method">${['papel assinado', 'assinatura digital', 'verbal registrado em prontuário', 'outro'].map((x) => option(x, x, p.consent_method || 'papel assinado')).join('')}</select></div><div><label>Data</label><input name="date" type="date" value="${attr(p.consent_at ?? new Date().toISOString().slice(0, 10))}"></div></div>
+<label>Termo assinado (PDF, JPG ou PNG, opcional)</label><input type="file" name="file" accept="application/pdf,image/jpeg,image/png"><p style="margin-bottom:0"><button class="btn" type="submit">Registrar consentimento</button></p></form></div>
+<div class="card"><h2 style="margin-top:0">Histórico de base</h2><div class="facts"><div><div class="k">Comorbidades</div><div class="v">${h(p.comorbidities || '—')}</div></div><div><div class="k">Medicamentos</div><div class="v">${h(p.medications || '—')}</div></div><div><div class="k">Suplementos</div><div class="v">${h(p.supplements || '—')}</div></div><div><div class="k">Objetivo</div><div class="v">${h(p.goal || '—')}</div></div></div>${p.notes ? `<p style="margin:12px 0 0"><span class="k muted small">Observações internas</span><br>${h(p.notes)}</p>` : ''}</div>
+</div>
+<h2>Casos</h2><div class="card flush"><div class="tablewrap"><table><thead><tr><th>Caso</th><th>Última coleta</th><th class="num">Exames</th><th class="num">Score</th><th>Status</th><th></th></tr></thead><tbody>${caseRows || '<tr><td colspan="6" class="muted">Nenhum caso ainda.</td></tr>'}</tbody></table></div></div>
+<h2>Evolução entre coletas</h2>${opts.evolution}`;
+}
+
+export function consentPrintPage(p: Patient, text: string, version: string, clinic: string, signature: string): string {
+  return `<h1 style="font-size:18pt">Termo de consentimento (LGPD)</h1><p class="small" style="color:#555">${h(clinic || '')} · versão ${h(version)}</p>
+<p><b>Paciente:</b> ${h(p.name)} · <b>Nascimento:</b> ${fmtDate(p.birth_date)} · <b>Código:</b> ${h(p.code)}</p>
+<div style="white-space:pre-line;margin:16px 0">${h(text)}</div>
+<p style="margin-top:36px">Local e data: ______________________________, ____/____/______</p>
+<p style="margin-top:40px">______________________________________________<br>Assinatura do paciente ou responsável</p>
+<p style="margin-top:40px">______________________________________________<br>${h(signature || 'Médico(a) responsável')}</p>`;
+}
+
+/* ========================= Modelos de conduta ========================= */
+export function templatesPage(templates: ConductTemplate[]): string {
+  const rows = templates.map((t) => `<tr><td><a href="/modelos/${t.id}" style="font-weight:600;text-decoration:none">${h(t.name)}</a><div class="muted small">${h(t.profile.slice(0, 120))}</div></td><td class="small">${t.triggers.map((x) => `<code>${h(x)}</code>`).join(' ') || '<span class="muted">manual</span>'}</td><td class="num">${t.items.length}</td><td>${statusTag(t.status)}</td></tr>`).join('');
+  return `<div class="pagehead"><div><div class="crumbs">Banco do médico</div><h1>Modelos de conduta</h1><div class="sub">Pacotes de conduta por perfil (ex.: resistência insulínica + vitamina D baixa). Com gatilhos, o sistema sugere o modelo quando o caso combina; a IA também os usa como ponto de partida. Nada entra no relatório sem sua aprovação.</div></div><a class="btn" href="/modelos/novo">Novo modelo</a></div>
+<div class="card flush"><div class="tablewrap"><table><thead><tr><th>Modelo / perfil</th><th>Gatilhos (exame:classificação)</th><th class="num">Itens</th><th>Status</th></tr></thead><tbody>${rows || '<tr><td colspan="4" class="muted">Nenhum modelo. Crie um aqui ou use "Salvar como modelo" na conduta de um caso.</td></tr>'}</tbody></table></div></div>`;
+}
+
+export function templateFormPage(t: Partial<ConductTemplate> | null, error: string | null): string {
+  const items = (t?.items ?? []).map((i) => `${i.kind} | ${i.title} | ${i.rationale}`).join('\n');
+  return `<div class="pagehead"><div><div class="crumbs"><a href="/modelos">Modelos de conduta</a> / ${t?.id ? h(t.name ?? '') : 'novo'}</div><h1>${t?.id ? 'Editar modelo' : 'Novo modelo'}</h1></div></div>
+${error ? `<div class="flash err">${h(error)}</div>` : ''}
+<form method="post" action="${t?.id ? `/modelos/${t.id}` : '/modelos'}" class="card">
+<div class="grid"><div style="grid-column:span 2"><label>Nome</label><input name="name" required value="${attr(t?.name ?? '')}" placeholder="ex.: Resistência insulínica + vitamina D baixa"></div><div><label>Status</label><select name="status">${option('ativo', 'ativo', t?.status ?? 'ativo')}${option('inativo', 'inativo', t?.status ?? 'ativo')}</select></div></div>
+<label>Perfil do paciente (texto livre que orienta a IA)</label><textarea name="profile" style="min-height:70px">${h(t?.profile ?? '')}</textarea>
+<label>Gatilhos automáticos (um por linha: exame:classificação; todos precisam ocorrer no caso). Classificações: ${CLASSIFICATIONS.join(', ')}, critico</label><textarea name="triggers" style="min-height:70px" placeholder="homa_ir:acima_do_alvo\nvitamina_d_25oh:abaixo_do_alvo">${h((t?.triggers ?? []).join('\n'))}</textarea>
+<label>Itens da conduta (um por linha: tipo | título | justificativa). Tipos: ${Object.keys(CONDUCT_KIND_LABEL_UI).join(', ')}</label><textarea name="items" style="min-height:160px" placeholder="suplementacao | Vitamina D3 | 25(OH)D abaixo do alvo\nseguimento | Repetir HOMA-IR em 3 meses | acompanhar resposta">${h(items)}</textarea>
+<p class="actions"><button class="btn" type="submit">Salvar</button><a class="btn sec" href="/modelos">Cancelar</a>${t?.id ? `<button class="btn danger" type="submit" formaction="/modelos/${t.id}/excluir" formnovalidate onclick="return confirm('Excluir o modelo?')">Excluir</button>` : ''}</p></form>`;
 }
