@@ -76,7 +76,7 @@ export async function userFromBearer(authorization: string | undefined): Promise
   // Senha inutilizável: quem entra por SSO não usa senha local até definir uma.
   const unusable = `sso:${crypto.randomBytes(16).toString('hex')}`;
   const id = Number((await getAsyncDb().prepare('INSERT INTO users(email, name, password_hash, role) VALUES (?, ?, ?, ?)').run(email, name, unusable, mapped)).lastInsertRowid);
-  audit(id, 'sso_criar_usuario', 'user', id, { email, ln_role: lnRole, role: mapped, sub: v.claims.sub ?? null });
+  await audit(id, 'sso_criar_usuario', 'user', id, { email, ln_role: lnRole, role: mapped, sub: v.claims.sub ?? null });
   const user = await findUserByEmail(email);
   return user ? { ok: true, user } : { ok: false, status: 403, reason: 'falha ao criar usuário' };
 }

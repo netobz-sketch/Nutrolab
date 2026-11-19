@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { zodOutputFormat } from '@anthropic-ai/sdk/helpers/zod';
-import { getDb } from './db.js';
+import { getAsyncDb } from './db.js';
 
 export const AI_MODEL = process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-5-5';
 
@@ -77,7 +77,7 @@ export async function extractFromFile(file: Buffer, mime: FileMime, catalog: Arr
       ],
       output_config: { effort: 'high', format: zodOutputFormat(ExtractionSchema) },
     });
-    recordUsage(caseId, 'extracao', response.usage.input_tokens, response.usage.output_tokens);
+    await recordUsage(caseId, 'extracao', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou processar este documento.');
     if (response.stop_reason === 'max_tokens') throw new AiError('Resposta truncada: arquivo grande demais para uma extração; divida o arquivo.');
     if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
@@ -128,7 +128,7 @@ export async function writeReports(payload: unknown, caseId: number): Promise<Re
       messages: [{ role: 'user', content: `Dados do caso (JSON):\n${JSON.stringify(payload, null, 1)}` }],
       output_config: { effort: 'high', format: zodOutputFormat(ReportsSchema) },
     });
-    recordUsage(caseId, 'relatorios', response.usage.input_tokens, response.usage.output_tokens);
+    await recordUsage(caseId, 'relatorios', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou redigir esta análise.');
     if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
     return response.parsed_output;
@@ -175,7 +175,7 @@ export async function suggestConduct(payload: unknown, caseId: number): Promise<
       messages: [{ role: 'user', content: `Dados do caso (JSON):\n${JSON.stringify(payload, null, 1)}` }],
       output_config: { effort: 'high' },
     });
-    recordUsage(caseId, 'conduta_pesquisa', research.usage.input_tokens, research.usage.output_tokens);
+    await recordUsage(caseId, 'conduta_pesquisa', research.usage.input_tokens, research.usage.output_tokens);
     if (research.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir conduta para este caso.');
     const searches = research.content.filter((b) => b.type === 'server_tool_use' && b.name === 'web_search').length;
     const draft = research.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('\n').trim();
@@ -188,7 +188,7 @@ export async function suggestConduct(payload: unknown, caseId: number): Promise<
       messages: [{ role: 'user', content: draft }],
       output_config: { effort: 'low', format: zodOutputFormat(ConductSchema) },
     });
-    recordUsage(caseId, 'conduta_estrutura', structured.usage.input_tokens, structured.usage.output_tokens);
+    await recordUsage(caseId, 'conduta_estrutura', structured.usage.input_tokens, structured.usage.output_tokens);
     if (!structured.parsed_output) throw new AiError('A lista de sugestões não pôde ser estruturada; tente de novo.');
     return { conduct: structured.parsed_output, searches };
   } catch (error) {
@@ -229,7 +229,7 @@ export async function draftFormula(name: string, kind: string, intent: string, c
       messages: [{ role: 'user', content: `Tipo: ${kind}\nNome/intenção: ${name}\n${intent ? `Detalhes do médico: ${intent}\n` : ''}Ids de exames disponíveis: ${catalog.join(', ')}` }],
       output_config: { effort: 'medium', format: zodOutputFormat(FormulaDraftSchema) },
     });
-    recordUsage(0, 'formula_rascunho', response.usage.input_tokens, response.usage.output_tokens);
+    await recordUsage(0, 'formula_rascunho', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou redigir esta fórmula.');
     if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
     return response.parsed_output;
@@ -260,7 +260,7 @@ export async function suggestFormulas(payload: unknown, caseId: number): Promise
       messages: [{ role: 'user', content: `Dados (JSON):\n${JSON.stringify(payload, null, 1)}` }],
       output_config: { effort: 'high', format: zodOutputFormat(FormulaSuggestionsSchema) },
     });
-    recordUsage(caseId, 'formulas', response.usage.input_tokens, response.usage.output_tokens);
+    await recordUsage(caseId, 'formulas', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou sugerir fórmulas para este caso.');
     if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
     return response.parsed_output;
@@ -296,7 +296,7 @@ export async function extractFormulary(source: { kind: 'pdf'; data: Buffer } | {
       messages: [{ role: 'user', content }],
       output_config: { effort: 'high', format: zodOutputFormat(FormularyExtractSchema) },
     });
-    recordUsage(0, 'formulario_extracao', response.usage.input_tokens, response.usage.output_tokens);
+    await recordUsage(0, 'formulario_extracao', response.usage.input_tokens, response.usage.output_tokens);
     if (response.stop_reason === 'refusal') throw new AiError('O modelo recusou ler este documento.');
     if (response.stop_reason === 'max_tokens') throw new AiError('Documento grande demais para uma leitura; divida o arquivo.');
     if (!response.parsed_output) throw new AiError('A resposta da IA não pôde ser interpretada.');
@@ -312,9 +312,9 @@ export const NarrativeSchema = ReportsSchema;
 export type Narrative = Reports;
 export const writeNarrative = writeReports;
 
-function recordUsage(caseId: number, purpose: string, input: number, output: number): void {
+async function recordUsage(caseId: number, purpose: string, input: number, output: number): Promise<void> {
   try {
-    getDb().prepare('INSERT INTO ai_usage(case_id, purpose, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)').run(caseId, purpose, AI_MODEL, input, output);
+    await getAsyncDb().prepare('INSERT INTO ai_usage(case_id, purpose, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)').run(caseId, purpose, AI_MODEL, input, output);
   } catch {
     // registro de uso nunca derruba a operação
   }

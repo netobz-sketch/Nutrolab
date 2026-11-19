@@ -15,7 +15,7 @@ export async function patientSeries(patientId: number, profile: PatientProfile):
   const rows = (await getAsyncDb()
     .prepare(`SELECT r.*, c.id AS case_id FROM results r JOIN cases c ON c.id = r.case_id WHERE c.patient_id = ? AND c.deleted_at IS NULL AND r.excluded = 0 AND r.collection_date IS NOT NULL ORDER BY r.collection_date, r.id`)
     .all(patientId)) as Row[];
-  const rules = allRules();
+  const rules = (await allRules());
   const map = new Map<string, Series>();
   for (const r of rows) {
     const parsed = parseValue(str(r, 'value_raw'));
@@ -106,7 +106,7 @@ export async function previousValues(patientId: number | null, caseId: number): 
   const rows = (await getAsyncDb()
     .prepare(`SELECT r.exam_canonical, r.exam_raw, r.value_raw, r.unit_raw, r.collection_date FROM results r JOIN cases c ON c.id = r.case_id WHERE c.patient_id = ? AND c.id != ? AND c.deleted_at IS NULL AND r.excluded = 0 AND r.collection_date IS NOT NULL ORDER BY r.collection_date DESC`)
     .all(patientId, caseId)) as Row[];
-  const rules = allRules();
+  const rules = (await allRules());
   for (const r of rows) {
     const k = strOrNull(r, 'exam_canonical') ?? matchExam(str(r, 'exam_raw'), rules);
     if (k && !out.has(k)) out.set(k, { raw: str(r, 'value_raw'), unit: str(r, 'unit_raw'), date: str(r, 'collection_date') });

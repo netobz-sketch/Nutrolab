@@ -190,7 +190,7 @@ function markerOf(ev: Evaluation, catalog: Map<string, CatalogEntry>): Integrati
 /** Classificação de cada linha de `results` do caso (não excluídas) pelas regras ATIVAS do motor. */
 async function evaluateCaseResults(c: CaseRow): Promise<Evaluation[]> {
   const results = (await loadResults(c.id)).filter((r) => !r.excluded);
-  return evaluateAll(toInputs(results), allRules(), profileOf(c));
+  return evaluateAll(toInputs(results), (await allRules()), profileOf(c));
 }
 
 const MAX_HIGHLIGHTS = 6;
@@ -332,7 +332,7 @@ async function casesOfPatient(patientCode: string): Promise<CaseRow[]> {
 }
 
 async function buildAnalysis(c: CaseRow, a: AnalysisRecord): Promise<IntegrationAnalysis> {
-  const catalog = catalogIndex(allRules());
+  const catalog = catalogIndex((await allRules()));
   const evals = await evaluateCaseResults(c);
   const markers = evals.map((ev) => markerOf(ev, catalog));
   const stored = parseScore(a.scoreJson);
@@ -369,7 +369,7 @@ const MAX_SERIES_LIMIT = 50;
  * data não se repete — vale o ponto da análise mais recente. Só pontos numéricos.
  */
 async function markerSeries(patientCode: string, exams: Set<string> | null, limit: number): Promise<IntegrationMarkerSeries[]> {
-  const catalog = catalogIndex(allRules());
+  const catalog = catalogIndex((await allRules()));
   type Acc = { exam: string; label: string; unit: string | null; system: string; byDate: Map<string, IntegrationMarkerPoint> };
   const acc = new Map<string, Acc>();
   for (const c of await casesOfPatient(patientCode)) {
@@ -438,8 +438,8 @@ function codeParam(request: FastifyRequest): string | null {
   return code && code.length <= 40 && /^[\w.\-/ ]*$/u.test(code) ? code : null;
 }
 
-function record(request: FastifyRequest, action: string, entity: string, entityId: string | number | null, details: unknown): void {
-  audit(null, `integ_${action}`, entity, entityId, details, request.id);
+async function record(request: FastifyRequest, action: string, entity: string, entityId: string | number | null, details: unknown): Promise<void> {
+  await audit(null, `integ_${action}`, entity, entityId, details, request.id);
 }
 
 function toContextList(value: string[] | string | null | undefined): string[] {
@@ -500,7 +500,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
   });
 
   app.get('/health', async (request) => {
-    record(request, 'health', 'system', null, null);
+    await record(request, 'health', 'system', null, null);
     return { data: { ok: true, app: 'nutrolab', version: APP_VERSION } };
   });
 
@@ -508,7 +508,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const code = codeParam(request);
     if (code === null) return sendError(reply, ERR.notFound, 'Código de paciente inválido.');
     const cases = await Promise.all((await casesOfPatient(code)).map(async (c) => toIntegrationCase(c, await analysesOfCase(c.id))));
-    record(request, 'patient_cases', 'patient', code, { patient_code: code, cases: cases.length });
+    await record(request, 'patient_cases', 'patient', code, { patient_code: code, cases: cases.length });
     return { data: cases };
   });
 
@@ -517,7 +517,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const c = id === null ? null : await loadCase(id);
     if (!c) return sendError(reply, ERR.notFound, 'Caso não encontrado.');
     const analyses = await analysesOfCase(c.id);
-    record(request, 'case', 'case', c.id, { patient_code: c.patient_code });
+    await record(request, 'case', 'case', c.id, { patient_code: c.patient_code });
     return { data: { ...(await toIntegrationCase(c, analyses)), analyses: analyses.map(summaryOf) } };
   });
 
@@ -542,7 +542,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
       .prepare("INSERT INTO cases(patient_id, patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL)")
       .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes);
     const id = Number(info.lastInsertRowid);
-    record(request, 'create_case', 'case', id, { patient_code: d.patientCode });
+    await record(request, 'create_case', 'case', id, { patient_code: d.patientCode });
     return reply.code(201).send({ data: { id, url: caseUrl(id) } });
   });
 
@@ -551,7 +551,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const a = id === null ? null : await analysisById(id);
     const c = a ? await loadCase(a.caseId) : null;
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
-    record(request, 'analysis', 'analysis', a.id, { patient_code: c.patient_code, case_id: c.id });
+    await record(request, 'analysis', 'analysis', a.id, { patient_code: c.patient_code, case_id: c.id });
     return { data: await buildAnalysis(c, a) };
   });
 
@@ -562,7 +562,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     if (!q.success) return reply.code(400).send({ error: { code: 'VALIDATION', message: 'Parâmetros inválidos: exams (lista separada por vírgula) e limit (1 a 50).' } });
     const exams = q.data.exams ? new Set(q.data.exams.split(',').map((e) => e.trim()).filter(Boolean)) : null;
     const series = await markerSeries(code, exams && exams.size ? exams : null, q.data.limit ?? DEFAULT_SERIES_LIMIT);
-    record(request, 'patient_markers', 'patient', code, { patient_code: code, exams: exams ? [...exams] : null, series: series.length });
+    await record(request, 'patient_markers', 'patient', code, { patient_code: code, exams: exams ? [...exams] : null, series: series.length });
     return { data: series };
   });
 
@@ -586,7 +586,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     if (fileId === null) {
       return reply.code(rejected ? 415 : 400).send({ error: { code: rejected ? 'UNSUPPORTED_FILE' : 'VALIDATION', message: rejected ? 'Formato não aceito: PDF, JPG, PNG ou WebP até 25 MB.' : 'Nenhum arquivo enviado.' } });
     }
-    record(request, 'upload_file', 'case', c.id, { patient_code: c.patient_code, file_id: fileId });
+    await record(request, 'upload_file', 'case', c.id, { patient_code: c.patient_code, file_id: fileId });
     return reply.code(201).send({ data: { fileId } });
   });
 
@@ -602,7 +602,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     if (!a.finalizedAt) return reply.code(409).send({ error: { code: 'NOT_FINALIZED', message: 'O relatório só é exportado depois de finalizado pelo médico.' } });
     const raw = type === 'tecnico' ? a.finalTechnical : a.finalPatient;
     const markdown = redactPatientName(raw, c.patient_name, c.patient_code) ?? '';
-    record(request, 'export_analysis', 'analysis', a.id, { patient_code: c.patient_code, format, type });
+    await record(request, 'export_analysis', 'analysis', a.id, { patient_code: c.patient_code, format, type });
     if (format === 'md') return reply.type('text/markdown; charset=utf-8').send(markdown);
     const row = (await getAsyncDb().prepare('SELECT * FROM analyses WHERE id = ?').get(a.id)) as Row;
     return reply.type('text/html; charset=utf-8').send(await printAnalysisHtml(c, row, type, markdown));

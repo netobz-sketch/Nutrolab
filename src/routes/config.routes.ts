@@ -93,10 +93,10 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   app.get('/regras', async (request, reply) => {
     const q = request.query as { sistema?: string; q?: string };
     const sys = q.sistema ?? null;
-    return page(request, reply, 'Referências dos exames', quickRulesPage(allRules(), sys && sys in SYSTEMS ? sys : null, (q.q ?? '').slice(0, 60)));
+    return page(request, reply, 'Referências dos exames', quickRulesPage((await allRules()), sys && sys in SYSTEMS ? sys : null, (q.q ?? '').slice(0, 60)));
   });
-  app.get('/regras/lista', async (request, reply) => page(request, reply, 'Exames e referências', rulesPage(allRules(), allGuidances())));
-  app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, allGuidances(), null, calcIds)));
+  app.get('/regras/lista', async (request, reply) => page(request, reply, 'Exames e referências', rulesPage((await allRules()), (await allGuidances()))));
+  app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, (await allGuidances()), null, calcIds)));
 
   app.get('/regras/rapido', async (request, reply) => reply.redirect(`/regras${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
 
@@ -114,14 +114,14 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (d.status === 'ativo' && /^exemplo/i.test(str(row, 'clinical_source'))) return back(`${str(row, 'exam_canonical')}: linha de exemplo não pode ser ativada; abra "Completo" e informe a fonte clínica.`);
     if (d.status === 'ativo' && seq.length === 0 && !strOrNull(row, 'target_text')) return back(`${str(row, 'exam_canonical')}: para ativar, informe ao menos uma faixa.`);
     (await getAsyncDb().prepare("UPDATE rules SET critical_low=?, normal_min=?, target_min=?, target_max=?, normal_max=?, critical_high=?, status=?, reviewed_at=date('now'), updated_by=?, updated_at=datetime('now') WHERE id=?").run(d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high, d.status, request.user?.id ?? null, id));
-    audit(request.user?.id ?? null, 'editar_rapido', 'rule', id, { before: { cl: numOrNull(row, 'critical_low'), nl: numOrNull(row, 'normal_min'), tl: numOrNull(row, 'target_min'), th: numOrNull(row, 'target_max'), nh: numOrNull(row, 'normal_max'), ch: numOrNull(row, 'critical_high'), status: str(row, 'status') }, after: d }, request.id);
+    await audit(request.user?.id ?? null, 'editar_rapido', 'rule', id, { before: { cl: numOrNull(row, 'critical_low'), nl: numOrNull(row, 'normal_min'), tl: numOrNull(row, 'target_min'), th: numOrNull(row, 'target_max'), nh: numOrNull(row, 'normal_max'), ch: numOrNull(row, 'critical_high'), status: str(row, 'status') }, after: d }, request.id);
     return back(`${str(row, 'exam_canonical')} salvo (${d.status}).`, 'ok');
   });
 
   /* -------------------------------------------------------------- fórmulas */
   const FormulaBody = z.object({ name: z.string().trim().min(2).max(160), kind: z.enum(['manipulada', 'medicamento', 'suplemento']), composition: z.string().trim().max(4000).default(''), posology: z.string().trim().max(2000).default(''), indications: z.string().trim().max(3000).default(''), exams: z.string().trim().max(500).default(''), contraindications: z.string().trim().max(3000).default(''), notes: z.string().trim().max(3000).default(''), status: z.enum(['ativo', 'rascunho', 'inativo']) });
   const loadFormularyFiles = async (): Promise<FormularyFileRow[]> => ((await getAsyncDb().prepare('SELECT * FROM formula_files ORDER BY id DESC').all()) as Row[]).map((r) => ({ id: num(r, 'id'), original_name: str(r, 'original_name'), mime: str(r, 'mime'), size: num(r, 'size'), extracted_count: numOrNull(r, 'extracted_count'), created_at: str(r, 'created_at') }));
-  const formulasView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => page(request, reply, 'Fórmulas', formulasPage(allFormulas(), aiEnabled(), error, (await loadFormularyFiles())));
+  const formulasView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => page(request, reply, 'Fórmulas', formulasPage((await allFormulas()), aiEnabled(), error, (await loadFormularyFiles())));
   app.get('/formulas', async (request, reply) => formulasView(request, reply));
 
   app.post('/formulas/arquivos', async (request, reply) => {
@@ -141,7 +141,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       (await getAsyncDb().prepare('INSERT INTO formula_files(original_name, stored_name, mime, size, created_by) VALUES (?, ?, ?, ?, ?)').run(path.basename(part.filename || 'formulario').slice(0, 120), stored, mime, buf.length, request.user?.id ?? null));
       saved += 1;
     }
-    audit(request.user?.id ?? null, 'upload_formulario', 'formula_file', null, { saved, rejected }, request.id);
+    await audit(request.user?.id ?? null, 'upload_formulario', 'formula_file', null, { saved, rejected }, request.id);
     return reply.redirect(`/formulas?kind=${rejected ? 'warn' : 'ok'}&msg=${encodeURIComponent(`${saved} arquivo(s) anexado(s).${rejected ? ` ${rejected} rejeitado(s): só .docx e .pdf até 25 MB.` : ' Agora clique em "Gerar fórmulas com IA".'}`)}`);
   });
 
@@ -152,14 +152,14 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!aiEnabled()) return formulasView(request, reply, 'IA desligada.');
     try {
       const buf = fs.readFileSync(path.join(FORMULARY_DIR, str(row, 'stored_name')));
-      const catalog = [...new Set(allRules().map((r) => r.exam_canonical))];
+      const catalog = [...new Set((await allRules()).map((r) => r.exam_canonical))];
       const source = str(row, 'mime') === 'application/pdf' ? ({ kind: 'pdf', data: buf } as const) : ({ kind: 'text', text: docxText(buf) } as const);
       if (source.kind === 'text' && source.text.length < 20) return formulasView(request, reply, 'O documento Word parece vazio ou sem texto legível.');
       const result = await extractFormulary(source, catalog);
       const insert = (await getAsyncDb().prepare("INSERT INTO formulas(name, kind, composition, posology, indications, exams, contraindications, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'rascunho', ?)"));
       for (const f of result.formulas) insert.run(f.nome.slice(0, 160), f.tipo, f.composicao.slice(0, 4000), f.posologia.slice(0, 2000), f.indicacoes.slice(0, 3000), f.exames.filter((x) => catalog.includes(x)).join('|'), f.contraindicacoes.slice(0, 3000), [`Origem: ${str(row, 'original_name')}`, f.observacoes].filter(Boolean).join(' · ').slice(0, 3000), request.user?.id ?? null);
       (await getAsyncDb().prepare('UPDATE formula_files SET extracted_count = ? WHERE id = ?').run(result.formulas.length, id));
-      audit(request.user?.id ?? null, 'extrair_formulario_ia', 'formula_file', id, { items: result.formulas.length, obs: result.observacoes.slice(0, 300) }, request.id);
+      await audit(request.user?.id ?? null, 'extrair_formulario_ia', 'formula_file', id, { items: result.formulas.length, obs: result.observacoes.slice(0, 300) }, request.id);
       return reply.redirect(`/formulas?kind=ok&msg=${encodeURIComponent(`${result.formulas.length} item(ns) criados em rascunho a partir de ${str(row, 'original_name')}. Revise e ative.${result.observacoes ? ` Observações: ${result.observacoes.slice(0, 200)}` : ''}`)}`);
     } catch (error) {
       request.log.error({ err: error }, 'falha na leitura do formulário');
@@ -173,7 +173,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send('Arquivo não encontrado');
     fs.rmSync(path.join(FORMULARY_DIR, str(row, 'stored_name')), { force: true });
     (await getAsyncDb().prepare('DELETE FROM formula_files WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'excluir_formulario', 'formula_file', id, { file: str(row, 'original_name') }, request.id);
+    await audit(request.user?.id ?? null, 'excluir_formulario', 'formula_file', id, { file: str(row, 'original_name') }, request.id);
     return ok(reply, '/formulas', 'Arquivo removido.');
   });
   app.get('/formulas/nova', async (request, reply) => page(request, reply, 'Novo item', formulaFormPage(null, null)));
@@ -186,10 +186,10 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const body = (request.body ?? {}) as { name?: string; kind?: string; intent?: string };
     const name = (body.name ?? '').trim();
     const kind = ['manipulada', 'medicamento', 'suplemento'].includes(body.kind ?? '') ? (body.kind as string) : 'manipulada';
-    if (!name) return page(request, reply, 'Fórmulas e medicamentos', formulasPage(allFormulas(), aiEnabled(), 'Informe um nome ou intenção.'));
+    if (!name) return page(request, reply, 'Fórmulas e medicamentos', formulasPage((await allFormulas()), aiEnabled(), 'Informe um nome ou intenção.'));
     try {
-      const draft = await draftFormula(name, kind, (body.intent ?? '').trim(), [...new Set(allRules().map((r) => r.exam_canonical))]);
-      audit(request.user?.id ?? null, 'formula_rascunho_ia', 'formula', null, { name }, request.id);
+      const draft = await draftFormula(name, kind, (body.intent ?? '').trim(), [...new Set((await allRules()).map((r) => r.exam_canonical))]);
+      await audit(request.user?.id ?? null, 'formula_rascunho_ia', 'formula', null, { name }, request.id);
       return page(request, reply, 'Rascunho', formulaFormPage({ name: draft.nome || name, kind: kind as 'manipulada', composition: draft.composicao, posology: draft.posologia, indications: draft.indicacoes, exams: draft.exames, contraindications: draft.contraindicacoes, notes: draft.observacoes, status: 'rascunho' }, null, true));
     } catch (error) {
       request.log.error({ err: error }, 'falha no rascunho de fórmula');
@@ -207,7 +207,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     let fid = id;
     if (id) (await getAsyncDb().prepare("UPDATE formulas SET name=?, kind=?, composition=?, posology=?, indications=?, exams=?, contraindications=?, notes=?, status=?, updated_at=datetime('now') WHERE id=?").run(...params, id));
     else fid = Number((await getAsyncDb().prepare('INSERT INTO formulas(name, kind, composition, posology, indications, exams, contraindications, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params, request.user?.id ?? null)).lastInsertRowid);
-    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'formula', fid, { before: current ? rowToFormula(current) : null, after: d }, request.id);
+    await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'formula', fid, { before: current ? rowToFormula(current) : null, after: d }, request.id);
     return ok(reply, '/formulas', `${d.name} salvo (${d.status}).`);
   };
   app.post('/formulas', async (request, reply) => saveFormula(request, reply, null));
@@ -217,7 +217,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = (await getAsyncDb().prepare('SELECT * FROM formulas WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Item não encontrado');
     (await getAsyncDb().prepare('DELETE FROM formulas WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'excluir', 'formula', id, { before: rowToFormula(row) }, request.id);
+    await audit(request.user?.id ?? null, 'excluir', 'formula', id, { before: rowToFormula(row) }, request.id);
     return ok(reply, '/formulas', 'Item excluído.');
   });
 
@@ -228,7 +228,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const [kind = 'outro', title = '', rationale = ''] = l.split('|').map((x) => x.trim());
     return { kind: kind in CONDUCT_KIND_LABEL_UI ? kind : 'outro', title: title.slice(0, 200), rationale: rationale.slice(0, 1000) };
   }).filter((i) => i.title);
-  app.get('/modelos', async (request, reply) => page(request, reply, 'Modelos de conduta', templatesPage(allTemplates())));
+  app.get('/modelos', async (request, reply) => page(request, reply, 'Modelos de conduta', templatesPage((await allTemplates()))));
   app.get('/modelos/novo', async (request, reply) => page(request, reply, 'Novo modelo', templateFormPage(null, null)));
   app.get('/modelos/:id', async (request, reply) => {
     const row = (await getAsyncDb().prepare('SELECT * FROM conduct_templates WHERE id = ?').get(Number((request.params as { id: string }).id))) as Row | undefined;
@@ -250,7 +250,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     let tid = id;
     if (id) (await getAsyncDb().prepare("UPDATE conduct_templates SET name=?, profile=?, triggers=?, items=?, status=?, updated_at=datetime('now') WHERE id=?").run(d.name, d.profile, triggers.join('|'), JSON.stringify(items), d.status, id));
     else tid = Number((await getAsyncDb().prepare('INSERT INTO conduct_templates(name, profile, triggers, items, status, created_by) VALUES (?, ?, ?, ?, ?, ?)').run(d.name, d.profile, triggers.join('|'), JSON.stringify(items), d.status, request.user?.id ?? null)).lastInsertRowid);
-    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'conduct_template', tid, { name: d.name, items: items.length, triggers }, request.id);
+    await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'conduct_template', tid, { name: d.name, items: items.length, triggers }, request.id);
     return ok(reply, '/modelos', `Modelo "${d.name}" salvo (${d.status}).`);
   };
   app.post('/modelos', async (request, reply) => saveTemplate(request, reply, null));
@@ -258,13 +258,13 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   app.post('/modelos/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     (await getAsyncDb().prepare('DELETE FROM conduct_templates WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'excluir', 'conduct_template', id, null, request.id);
+    await audit(request.user?.id ?? null, 'excluir', 'conduct_template', id, null, request.id);
     return ok(reply, '/modelos', 'Modelo excluído.');
   });
 
   /* ------------------------------------------------------------- relatórios */
   const reportsList = async (): Promise<ReportListRow[]> => ((await getAsyncDb().prepare('SELECT a.id AS analysis_id, a.case_id, a.score, a.created_at, a.finalized_at, a.ai_used, c.patient_code, c.patient_name FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.deleted_at IS NULL ORDER BY a.id DESC LIMIT 200').all()) as Row[]).map((r) => ({ analysis_id: num(r, 'analysis_id'), case_id: num(r, 'case_id'), patient_code: str(r, 'patient_code'), patient_name: str(r, 'patient_name'), score: numOrNull(r, 'score'), created_at: str(r, 'created_at'), finalized_at: strOrNull(r, 'finalized_at'), ai_used: num(r, 'ai_used') === 1 }));
-  app.get('/relatorios', async (request, reply) => page(request, reply, 'Relatórios', reportsPage((await reportsList()), reportSettings(), null, request.user?.role === 'admin')));
+  app.get('/relatorios', async (request, reply) => page(request, reply, 'Relatórios', reportsPage((await reportsList()), (await reportSettings()), null, request.user?.role === 'admin')));
   const ReportCfg = z.object({ clinic_name: z.string().trim().max(120).default(''), clinic_info: z.string().trim().max(300).default(''), signature: z.string().trim().max(200).default(''), patient_intro: z.string().trim().max(2000).default(''), patient_closing: z.string().trim().max(2000).default(''), technical_footer: z.string().trim().max(2000).default(''), show_score: z.string().optional(), show_systems: z.string().optional(), show_guidances: z.string().optional() });
   app.post('/relatorios/logo', { preHandler: requireAdmin }, async (request, reply) => {
     const file = await request.file({ limits: { fileSize: 2 * 1024 * 1024 } });
@@ -274,39 +274,39 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!kind || file.file.truncated) return reply.redirect('/relatorios?kind=err&msg=' + encodeURIComponent('Formato não aceito ou arquivo acima de 2 MB (PNG, JPG, SVG, WebP).'));
     for (const f of fs.readdirSync(BRAND_DIR)) if (f.startsWith('logo.')) fs.rmSync(path.join(BRAND_DIR, f), { force: true });
     fs.writeFileSync(path.join(BRAND_DIR, `logo.${kind}`), buf);
-    setSetting('report.logo', `${kind}-${Date.now()}`);
-    audit(request.user?.id ?? null, 'logo', 'settings', 'relatorios', { kind, size: buf.length }, request.id);
+    await setSetting('report.logo', `${kind}-${Date.now()}`);
+    await audit(request.user?.id ?? null, 'logo', 'settings', 'relatorios', { kind, size: buf.length }, request.id);
     return ok(reply, '/relatorios', 'Logo atualizada.');
   });
 
   app.post('/relatorios/config', { preHandler: requireAdmin }, async (request, reply) => {
     const parsed = ReportCfg.safeParse(request.body);
-    if (!parsed.success) return page(request, reply, 'Relatórios', reportsPage((await reportsList()), reportSettings(), firstIssue(parsed.error), true));
+    if (!parsed.success) return page(request, reply, 'Relatórios', reportsPage((await reportsList()), (await reportSettings()), firstIssue(parsed.error), true));
     const d = parsed.data;
-    for (const k of ['clinic_name', 'clinic_info', 'signature', 'patient_intro', 'patient_closing', 'technical_footer'] as const) setSetting(`report.${k}`, d[k]);
-    for (const k of ['show_score', 'show_systems', 'show_guidances'] as const) setSetting(`report.${k}`, d[k] === '1' ? '1' : '0');
-    audit(request.user?.id ?? null, 'editar', 'settings', 'relatorios', d, request.id);
+    for (const k of ['clinic_name', 'clinic_info', 'signature', 'patient_intro', 'patient_closing', 'technical_footer'] as const) (await setSetting(`report.${k}`, d[k]));
+    for (const k of ['show_score', 'show_systems', 'show_guidances'] as const) (await setSetting(`report.${k}`, d[k] === '1' ? '1' : '0'));
+    await audit(request.user?.id ?? null, 'editar', 'settings', 'relatorios', d, request.id);
     return ok(reply, '/relatorios', 'Configuração dos relatórios salva.');
   });
   app.get('/regras/:id', async (request, reply) => {
     const row = (await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(Number((request.params as { id: string }).id))) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');
-    return page(request, reply, 'Regra', ruleFormPage(rowToRule(row), allGuidances(), null, calcIds));
+    return page(request, reply, 'Regra', ruleFormPage(rowToRule(row), (await allGuidances()), null, calcIds));
   });
 
   const saveRule = async (request: FastifyRequest, reply: FastifyReply, id: number | null) => {
     const parsed = RuleBody.safeParse(request.body);
     const current = id ? ((await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(id)) as Row | undefined) : undefined;
     if (id && !current) return reply.code(404).send('Regra não encontrada');
-    if (!parsed.success) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, allGuidances(), firstIssue(parsed.error), calcIds));
+    if (!parsed.success) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, (await allGuidances()), firstIssue(parsed.error), calcIds));
     const r = parsed.data;
-    const known = new Set(allGuidances().map((g) => g.code));
+    const known = new Set((await allGuidances()).map((g) => g.code));
     const unknown = r.guidance_ids.filter((g) => !known.has(g));
-    if (unknown.length) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, allGuidances(), `orientação inexistente: ${unknown.join(', ')}`, calcIds));
+    if (unknown.length) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, (await allGuidances()), `orientação inexistente: ${unknown.join(', ')}`, calcIds));
     const aliases = r.aliases.split('|').map((s) => s.trim()).filter(Boolean).join('|');
     const contexts = r.contexts.length ? r.contexts.join('|') : 'geral';
     const dup = (await getAsyncDb().prepare("SELECT id FROM rules WHERE status = 'ativo' AND exam_canonical = ? AND sex = ? AND IFNULL(age_min,-1) = IFNULL(?, -1) AND IFNULL(age_max,-1) = IFNULL(?, -1) AND contexts = ? AND unit = ? AND id != IFNULL(?, -1)").get(r.exam_canonical, r.sex, r.age_min, r.age_max, contexts, r.unit, id)) as Row | undefined;
-    if (r.status === 'ativo' && dup) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, allGuidances(), `já existe regra ativa idêntica (#${num(dup, 'id')}); inative-a ou diferencie as condições`, calcIds));
+    if (r.status === 'ativo' && dup) return page(request, reply, 'Regra', ruleFormPage(current ? rowToRule(current) : null, (await allGuidances()), `já existe regra ativa idêntica (#${num(dup, 'id')}); inative-a ou diferencie as condições`, calcIds));
     const params = [r.exam_canonical, aliases, r.sex, r.age_min, r.age_max, contexts, r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null];
     let ruleId = id;
     if (id) {
@@ -315,12 +315,12 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       const info = (await getAsyncDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params));
       ruleId = Number(info.lastInsertRowid);
     }
-    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'rule', ruleId, { before: current ? rowToRule(current) : null, after: r }, request.id);
+    await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'rule', ruleId, { before: current ? rowToRule(current) : null, after: r }, request.id);
     return ok(reply, '/regras/lista', `Regra ${r.exam_canonical} salva (${r.status}).`);
   };
   app.get('/regras/exportar.csv', async (request, reply) => {
-    audit(request.user?.id ?? null, 'exportar', 'rule', null, { count: allRules().length }, request.id);
-    return reply.header('Content-Disposition', 'attachment; filename="valores-otimizados.csv"').type('text/csv; charset=utf-8').send(rulesToCsv(allRules()));
+    await audit(request.user?.id ?? null, 'exportar', 'rule', null, { count: (await allRules()).length }, request.id);
+    return reply.header('Content-Disposition', 'attachment; filename="valores-otimizados.csv"').type('text/csv; charset=utf-8').send(rulesToCsv((await allRules())));
   });
 
   app.post('/regras/importar', async (request, reply) => {
@@ -330,7 +330,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const header = (text.split(/\r?\n/)[0] ?? '').trim();
     const legacyHeader = RULE_CSV_COLUMNS.slice(0, 17).join(',');
     if (header !== RULE_CSV_COLUMNS.join(',') && header !== legacyHeader) return reply.redirect('/regras/lista?kind=err&msg=' + encodeURIComponent('Cabeçalho do CSV diferente do esperado (use o arquivo exportado como modelo).'));
-    const known = new Set(allGuidances().map((g) => g.code));
+    const known = new Set((await allGuidances()).map((g) => g.code));
     const insert = (await getAsyncDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'));
     let imported = 0;
     const errors: string[] = [];
@@ -357,7 +357,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null);
       imported += 1;
     });
-    audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
+    await audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
     const msg = `${imported} regra(s) importada(s).${errors.length ? ` ${errors.length} rejeitada(s): ${errors.slice(0, 5).join(' · ')}` : ''}`;
     return reply.redirect(`/regras/lista?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);
   });
@@ -369,12 +369,12 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = (await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');
     (await getAsyncDb().prepare('DELETE FROM rules WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'excluir', 'rule', id, { before: rowToRule(row) }, request.id);
+    await audit(request.user?.id ?? null, 'excluir', 'rule', id, { before: rowToRule(row) }, request.id);
     return ok(reply, '/regras/lista', 'Regra excluída.');
   });
 
   /* ----------------------------------------------------------- orientações */
-  app.get('/orientacoes', async (request, reply) => page(request, reply, 'Orientações', guidancesPage(allGuidances())));
+  app.get('/orientacoes', async (request, reply) => page(request, reply, 'Orientações', guidancesPage((await allGuidances()))));
   app.get('/orientacoes/nova', async (request, reply) => page(request, reply, 'Nova orientação', guidanceFormPage(null, null)));
   app.get('/orientacoes/:id', async (request, reply) => {
     const row = (await getAsyncDb().prepare('SELECT * FROM guidances WHERE id = ?').get(Number((request.params as { id: string }).id))) as Row | undefined;
@@ -397,7 +397,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       const info = (await getAsyncDb().prepare('INSERT INTO guidances(code, title, exam_canonical, trigger, contexts_required, contexts_excluded, not_apply_note, patient_text, requires_alert, clinical_source, version, reviewed_at, status, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params));
       gid = Number(info.lastInsertRowid);
     }
-    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'guidance', gid, { before: current ? rowToGuidance(current) : null, after: g }, request.id);
+    await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'guidance', gid, { before: current ? rowToGuidance(current) : null, after: g }, request.id);
     return ok(reply, '/orientacoes', `Orientação ${g.code} salva (${g.status}).`);
   };
   app.post('/orientacoes', async (request, reply) => saveGuidance(request, reply, null));
@@ -407,7 +407,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = (await getAsyncDb().prepare('SELECT * FROM guidances WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Orientação não encontrada');
     (await getAsyncDb().prepare('DELETE FROM guidances WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'excluir', 'guidance', id, { before: rowToGuidance(row) }, request.id);
+    await audit(request.user?.id ?? null, 'excluir', 'guidance', id, { before: rowToGuidance(row) }, request.id);
     return ok(reply, '/orientacoes', 'Orientação excluída.');
   });
 
@@ -417,14 +417,14 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = (await getAsyncDb().prepare('SELECT COUNT(*) AS calls, IFNULL(SUM(input_tokens),0) AS i, IFNULL(SUM(output_tokens),0) AS o FROM ai_usage').get()) as Row;
     return { calls: num(row, 'calls'), input: num(row, 'i'), output: num(row, 'o') };
   };
-  const settings = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null, resetLink: { email: string; link: string; expiresAt: string } | null = null) => page(request, reply, 'Configurações', settingsPage({ enabled: enabledCalcIds(), users: (await loadUsers()), aiOn: aiEnabled(), aiModel: AI_MODEL, error, usage: (await usage()), mailOn: mailEnabled(), resetLink }));
+  const settings = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null, resetLink: { email: string; link: string; expiresAt: string } | null = null) => page(request, reply, 'Configurações', settingsPage({ enabled: (await enabledCalcIds()), users: (await loadUsers()), aiOn: aiEnabled(), aiModel: AI_MODEL, error, usage: (await usage()), mailOn: mailEnabled(), resetLink }));
 
   app.get('/configuracoes', { preHandler: requireAdmin }, async (request, reply) => settings(request, reply));
   app.post('/configuracoes/calculos', { preHandler: requireAdmin }, async (request, reply) => {
     const body = request.body as { calc?: string | string[] } | null;
     const chosen = new Set(body?.calc === undefined ? [] : Array.isArray(body.calc) ? body.calc : [body.calc]);
-    for (const c of CALCS) setSetting(`calc.${c.id}`, chosen.has(c.id) ? '1' : '0');
-    audit(request.user?.id ?? null, 'editar', 'settings', 'calculos', { enabled: [...chosen] }, request.id);
+    for (const c of CALCS) (await setSetting(`calc.${c.id}`, chosen.has(c.id) ? '1' : '0'));
+    await audit(request.user?.id ?? null, 'editar', 'settings', 'calculos', { enabled: [...chosen] }, request.id);
     return ok(reply, '/configuracoes', 'Cálculos atualizados.');
   });
   app.post('/configuracoes/usuarios', { preHandler: requireAdmin }, async (request, reply) => {
@@ -436,7 +436,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (u.cpf && !cpf) return settings(request, reply, 'CPF inválido');
     if (cpf && ((await getAsyncDb().prepare('SELECT 1 FROM users WHERE cpf = ?').get(cpf)) as Row | undefined)) return settings(request, reply, 'CPF já cadastrado');
     const info = (await getAsyncDb().prepare('INSERT INTO users(email, name, password_hash, role, cpf, council, council_number, council_state, profession) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(u.email, u.name, hashPassword(u.password), u.role, cpf, u.council || null, u.council_number ? normalizeCouncilNumber(u.council_number) : null, u.council_state || null, u.council === 'CRN' ? 'nutricionista' : u.council === 'CRM' ? 'medico' : null));
-    audit(request.user?.id ?? null, 'criar', 'user', Number(info.lastInsertRowid), { email: u.email, role: u.role }, request.id);
+    await audit(request.user?.id ?? null, 'criar', 'user', Number(info.lastInsertRowid), { email: u.email, role: u.role }, request.id);
     return ok(reply, '/configuracoes', `Usuário ${u.email} criado.`);
   });
   app.post('/configuracoes/usuarios/:id/redefinir', { preHandler: requireAdmin }, async (request, reply) => {
@@ -444,7 +444,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const row = (await getAsyncDb().prepare('SELECT email FROM users WHERE id = ? AND disabled_at IS NULL').get(id)) as Row | undefined;
     if (!row) return settings(request, reply, 'usuário não encontrado ou desativado');
     const { token, expiresAt } = await createResetToken(id, 'admin', request.user?.id ?? null);
-    audit(request.user?.id ?? null, 'gerar_link_redefinicao', 'user', id, { expiresAt }, request.id);
+    await audit(request.user?.id ?? null, 'gerar_link_redefinicao', 'user', id, { expiresAt }, request.id);
     const base = appUrl() || `${request.protocol}://${request.hostname}`;
     return settings(request, reply, null, { email: str(row, 'email'), link: `${base}/redefinir/${token}`, expiresAt });
   });
@@ -453,13 +453,13 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const id = Number((request.params as { id: string }).id);
     if (id === request.user?.id) return settings(request, reply, 'não é possível desativar a si mesmo');
     (await getAsyncDb().prepare("UPDATE users SET disabled_at = datetime('now') WHERE id = ?").run(id));
-    audit(request.user?.id ?? null, 'desativar', 'user', id, null, request.id);
+    await audit(request.user?.id ?? null, 'desativar', 'user', id, null, request.id);
     return ok(reply, '/configuracoes', 'Usuário desativado.');
   });
   app.post('/configuracoes/usuarios/:id/ativar', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     (await getAsyncDb().prepare('UPDATE users SET disabled_at = NULL WHERE id = ?').run(id));
-    audit(request.user?.id ?? null, 'reativar', 'user', id, null, request.id);
+    await audit(request.user?.id ?? null, 'reativar', 'user', id, null, request.id);
     return ok(reply, '/configuracoes', 'Usuário reativado.');
   });
 

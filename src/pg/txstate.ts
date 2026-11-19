@@ -1,5 +1,5 @@
 /**
- * Estado de transação da conexão única do worker. Se a conexão cair com uma
+ * Estado de transação da conexão única com o Postgres (src/pg/pgdb.ts). Se a conexão cair com uma
  * transação aberta, a transação está PERDIDA: tudo o que vier depois, até um
  * ROLLBACK (ou COMMIT, que também falha), responde erro — nunca reconecta em
  * silêncio e continua fora da transação. Isolado aqui para ser testável.

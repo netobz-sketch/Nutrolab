@@ -19,7 +19,7 @@ delete process.env.ANTHROPIC_API_KEY;
 
 const TOKEN = 'token-de-teste-para-integracao-0123456789abcdef';
 const { buildApp } = await import('../src/app.js');
-const { getDb, allRules, tableVersion } = await import('../src/db.js');
+const { getAsyncDb, allRules, tableVersion } = await import('../src/db.js');
 const { evaluateAll, computeScore } = await import('../src/engine/index.js');
 const { buildPatientReport, buildTechnicalReport } = await import('../src/report.js');
 const { loadCase, loadResults, profileOf, toInputs } = await import('../src/routes/cases.routes.js');
@@ -109,7 +109,7 @@ test('POST /cases valida, cria caso aberto sem autor e com nota prefixada; GET p
   assert.equal(row.status, 'aberto');
   assert.match(row.notes, /^Criado pelo LN Evolution em \d{2}\/\d{2}\/\d{4}\.\nRetorno em 90 dias\.$/);
   assert.deepEqual(row.contexts.sort(), ['jejum', 'pre_menopausa']);
-  const createdBy = getDb().prepare('SELECT created_by FROM cases WHERE id = ?').get(caseId) as { created_by: number | null };
+  const createdBy = (await getAsyncDb().prepare('SELECT created_by FROM cases WHERE id = ?').get(caseId)) as { created_by: number | null };
   assert.equal(createdBy.created_by, null);
 
   const list = await get(`/api/integration/patients/${PATIENT}/cases`);
@@ -127,33 +127,32 @@ test('POST /cases valida, cria caso aberto sem autor e com nota prefixada; GET p
 });
 
 test('GET /analyses/:id: score, scoreBySystem, markers, highlights e relatórios sem nome do paciente', async () => {
-  const db = getDb();
   // Regras ativas de verdade (o catálogo nasce em rascunho). Vitamina D com ótimo e crítico; glicose só com normalidade.
-  db.prepare("UPDATE rules SET target_min = 40, target_max = 80, normal_min = 30, normal_max = 100, critical_low = 10, critical_high = 150, clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'vitamina_d_25oh'").run();
-  db.prepare("UPDATE rules SET clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'glicose_jejum'").run();
-  db.prepare("UPDATE rules SET clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'ferritina'").run();
+  (await getAsyncDb().prepare("UPDATE rules SET target_min = 40, target_max = 80, normal_min = 30, normal_max = 100, critical_low = 10, critical_high = 150, clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'vitamina_d_25oh'").run());
+  (await getAsyncDb().prepare("UPDATE rules SET clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'glicose_jejum'").run());
+  (await getAsyncDb().prepare("UPDATE rules SET clinical_source = 'Decisão da médica em 2026-10-28', status = 'ativo' WHERE exam_canonical = 'ferritina'").run());
   // Nome existe na tabela (coluna patient_name) e NÃO pode aparecer em nenhuma resposta.
-  db.prepare('UPDATE cases SET patient_name = ? WHERE id = ?').run('Maria Exemplo da Silva', caseId);
-  const insert = db.prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, lab_reference, lab_flag, collection_date, source_file, confidence, origin, checked, excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'exames.pdf', ?, 'manual', 1, ?)");
+  (await getAsyncDb().prepare('UPDATE cases SET patient_name = ? WHERE id = ?').run('Maria Exemplo da Silva', caseId));
+  const insert = (await getAsyncDb().prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, lab_reference, lab_flag, collection_date, source_file, confidence, origin, checked, excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'exames.pdf', ?, 'manual', 1, ?)"));
   // Nome fora dos aliases: vinculado ao canônico na conferência (coluna exam_canonical), como faz a tela.
-  insert.run(caseId, '25-Hidroxi Vitamina D', 'vitamina_d_25oh', '35', 'ng/mL', '30 a 100', 'L', '2026-10-15', 'alta', 0);
-  insert.run(caseId, 'Glicose', null, '92', 'mg/dL', '70 a 99', null, '2026-10-15', 'alta', 0);
-  insert.run(caseId, 'Ferritina', null, '1.250', 'ng/mL', null, null, '2026-10-15', 'media', 0);
-  insert.run(caseId, 'HBsAg', null, 'Não reagente', null, null, null, '2026-10-15', 'alta', 0);
-  insert.run(caseId, 'Exame excluído', null, '1', 'mg/dL', null, null, '2026-10-15', 'baixa', 1);
+  await insert.run(caseId, '25-Hidroxi Vitamina D', 'vitamina_d_25oh', '35', 'ng/mL', '30 a 100', 'L', '2026-10-15', 'alta', 0);
+  await insert.run(caseId, 'Glicose', null, '92', 'mg/dL', '70 a 99', null, '2026-10-15', 'alta', 0);
+  await insert.run(caseId, 'Ferritina', null, '1.250', 'ng/mL', null, null, '2026-10-15', 'media', 0);
+  await insert.run(caseId, 'HBsAg', null, 'Não reagente', null, null, null, '2026-10-15', 'alta', 0);
+  await insert.run(caseId, 'Exame excluído', null, '1', 'mg/dL', null, null, '2026-10-15', 'baixa', 1);
 
   // Análise montada pelo motor e pelos geradores de relatório, como faz /casos/:id/analisar.
   const c = await loadCase(caseId);
   assert.ok(c);
   const results = (await loadResults(caseId)).filter((r) => !r.excluded);
   const profile = profileOf(c);
-  const evals = evaluateAll(toInputs(results), allRules(), profile);
+  const evals = evaluateAll(toInputs(results), (await allRules()), profile);
   const score = computeScore(evals);
   assert.equal(score.total, 80); // vitamina D fora do ótimo e dentro do normal (0,6) + glicose normal (1) → 80
-  const base: ReportInput = { caseInfo: { id: c.id, patient_code: c.patient_code, patient_name: c.patient_name, sex: 'F', birth_date: c.birth_date, medications: c.medications, supplements: c.supplements, comorbidities: c.comorbidities, goal: c.goal, complaints: [], menopause: '', ai_notes: '', files: ['exames.pdf'] }, profile, evals, derived: [], derivedEvals: [], guidances: [], score, tableVersion: tableVersion(), narrative: null, aiModel: null, generatedAt: '15/11/2026 10:00:00' };
+  const base: ReportInput = { caseInfo: { id: c.id, patient_code: c.patient_code, patient_name: c.patient_name, sex: 'F', birth_date: c.birth_date, medications: c.medications, supplements: c.supplements, comorbidities: c.comorbidities, goal: c.goal, complaints: [], menopause: '', ai_notes: '', files: ['exames.pdf'] }, profile, evals, derived: [], derivedEvals: [], guidances: [], score, tableVersion: (await tableVersion()), narrative: null, aiModel: null, generatedAt: '15/11/2026 10:00:00' };
   const draftPatient = buildPatientReport(base);
   const draftTechnical = buildTechnicalReport(base);
-  const info = db.prepare('INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used, score, score_json, created_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)').run(caseId, draftTechnical, draftPatient, draftTechnical, base.tableVersion, score.total, JSON.stringify(score));
+  const info = (await getAsyncDb().prepare('INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used, score, score_json, created_by) VALUES (?, ?, ?, ?, ?, 0, ?, ?, NULL)').run(caseId, draftTechnical, draftPatient, draftTechnical, base.tableVersion, score.total, JSON.stringify(score)));
   analysisId = Number(info.lastInsertRowid);
 
   // Minuta (não finalizada): relatórios null, destaques vêm do markdown_patient.
@@ -167,12 +166,12 @@ test('GET /analyses/:id: score, scoreBySystem, markers, highlights e relatórios
   assert.match(d.highlights.favorable[0] ?? '', /dentro do que consideramos ideal/);
 
   // Finalização com conduta aprovada (2 aprovadas, 1 rejeitada).
-  const conduct = db.prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, 'seguimento', ?, 'x', 'medico', ?, 0)");
-  conduct.run(caseId, analysisId, 'Repetir vitamina D em 3 meses', 'aprovada');
-  conduct.run(caseId, analysisId, 'Conferir ferritina em laudo legível', 'aprovada');
-  conduct.run(caseId, analysisId, 'Item descartado', 'rejeitada');
+  const conduct = (await getAsyncDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, 'seguimento', ?, 'x', 'medico', ?, 0)"));
+  await conduct.run(caseId, analysisId, 'Repetir vitamina D em 3 meses', 'aprovada');
+  await conduct.run(caseId, analysisId, 'Conferir ferritina em laudo legível', 'aprovada');
+  await conduct.run(caseId, analysisId, 'Item descartado', 'rejeitada');
   const finalInput: ReportInput = { ...base, conduct: [{ kind: 'seguimento', title: 'Repetir vitamina D em 3 meses', rationale: 'x', exams: [], sources: [], origin: 'medico' }], authorName: 'Médica Teste' };
-  db.prepare("UPDATE analyses SET final_patient = ?, final_technical = ?, finalized_at = datetime('now') WHERE id = ?").run(buildPatientReport(finalInput), buildTechnicalReport(finalInput), analysisId);
+  (await getAsyncDb().prepare("UPDATE analyses SET final_patient = ?, final_technical = ?, finalized_at = datetime('now') WHERE id = ?").run(buildPatientReport(finalInput), buildTechnicalReport(finalInput), analysisId));
 
   const r = await get(`/api/integration/analyses/${analysisId}`);
   assert.equal(r.statusCode, 200);
@@ -234,25 +233,24 @@ test('GET /analyses/:id: score, scoreBySystem, markers, highlights e relatórios
 });
 
 test('GET /patients/:code/markers: séries cronológicas só de análises finalizadas, dedup por data', async () => {
-  const db = getDb();
   // Segundo caso do mesmo paciente, coleta anterior, com análise finalizada e outra em minuta.
   const second = await post('/api/integration/cases', { patientCode: PATIENT, sex: 'F', birthDate: '1985-03-10' });
   const case2 = second.json().data.id as number;
-  const ins = db.prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, collection_date, confidence, origin, checked, excluded) VALUES (?, ?, NULL, ?, ?, ?, 'alta', 'manual', 1, 0)");
-  ins.run(case2, 'Vitamina D', '18', 'ng/mL', '2026-04-02');
-  ins.run(case2, 'Glicose', '101', 'mg/dL', '2026-04-02');
+  const ins = (await getAsyncDb().prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, collection_date, confidence, origin, checked, excluded) VALUES (?, ?, NULL, ?, ?, ?, 'alta', 'manual', 1, 0)"));
+  await ins.run(case2, 'Vitamina D', '18', 'ng/mL', '2026-04-02');
+  await ins.run(case2, 'Glicose', '101', 'mg/dL', '2026-04-02');
   const c2 = await loadCase(case2);
   assert.ok(c2);
-  const evals2 = evaluateAll(toInputs(await loadResults(case2)), allRules(), profileOf(c2));
+  const evals2 = evaluateAll(toInputs(await loadResults(case2)), (await allRules()), profileOf(c2));
   const score2 = computeScore(evals2);
-  const mk = (final: boolean) => db.prepare(`INSERT INTO analyses(case_id, markdown, markdown_patient, table_version, ai_used, score, score_json, final_patient, finalized_at) VALUES (?, 'x', 'x', ?, 0, ?, ?, ${final ? "'x', datetime('now')" : 'NULL, NULL'})`).run(case2, tableVersion(), score2.total, JSON.stringify(score2));
-  const finalized2 = Number(mk(true).lastInsertRowid);
-  mk(false);
+  const mk = async (final: boolean) => (await getAsyncDb().prepare(`INSERT INTO analyses(case_id, markdown, markdown_patient, table_version, ai_used, score, score_json, final_patient, finalized_at) VALUES (?, 'x', 'x', ?, 0, ?, ?, ${final ? "'x', datetime('now')" : 'NULL, NULL'})`).run(case2, (await tableVersion()), score2.total, JSON.stringify(score2)));
+  const finalized2 = Number((await mk(true)).lastInsertRowid);
+  await mk(false);
   // Terceiro caso só com minuta: não entra nas séries.
   const third = await post('/api/integration/cases', { patientCode: PATIENT });
   const case3 = third.json().data.id as number;
-  ins.run(case3, 'Vitamina D', '70', 'ng/mL', '2026-11-01');
-  db.prepare("INSERT INTO analyses(case_id, markdown, table_version, ai_used, score_json) VALUES (?, 'x', ?, 0, '{}')").run(case3, tableVersion());
+  await ins.run(case3, 'Vitamina D', '70', 'ng/mL', '2026-11-01');
+  (await getAsyncDb().prepare("INSERT INTO analyses(case_id, markdown, table_version, ai_used, score_json) VALUES (?, 'x', ?, 0, '{}')").run(case3, (await tableVersion())));
 
   const all = await get(`/api/integration/patients/${PATIENT}/markers`);
   assert.equal(all.statusCode, 200);
@@ -291,7 +289,7 @@ test('v2 POST /cases/:id/files: aceita PDF/imagem pelo mesmo pipeline e recusa o
   assert.equal(ok.statusCode, 201);
   const fileId = ok.json().data.fileId as number;
   assert.ok(fileId > 0);
-  const row = getDb().prepare('SELECT case_id, mime, original_name FROM case_files WHERE id = ?').get(fileId) as { case_id: number; mime: string; original_name: string };
+  const row = (await getAsyncDb().prepare('SELECT case_id, mime, original_name FROM case_files WHERE id = ?').get(fileId)) as { case_id: number; mime: string; original_name: string };
   assert.equal(row.case_id, caseId);
   assert.equal(row.mime, 'application/pdf');
   assert.equal(row.original_name, 'laudo.pdf');
@@ -318,23 +316,22 @@ test('v2 GET /analyses/:id/export: md e html só quando finalizada, sem o nome d
   assert.doesNotMatch(html.body, /Maria/);
   assert.equal((await get(`/api/integration/analyses/${analysisId}/export?format=pdf`)).statusCode, 400);
   // minuta: 409
-  const db = getDb();
-  const draftId = Number(db.prepare("INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used) VALUES (?, 'x', 'x', 'x', 'v', 0)").run(caseId).lastInsertRowid);
+  const draftId = Number((await getAsyncDb().prepare("INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used) VALUES (?, 'x', 'x', 'x', 'v', 0)").run(caseId)).lastInsertRowid);
   const draft = await get(`/api/integration/analyses/${draftId}/export?format=md`);
   assert.equal(draft.statusCode, 409);
   assert.equal(draft.json().error.code, 'NOT_FINALIZED');
-  db.prepare('DELETE FROM analyses WHERE id = ?').run(draftId);
+  (await getAsyncDb().prepare('DELETE FROM analyses WHERE id = ?').run(draftId));
 });
 
 test('v2 POST /cases liga o caso ao paciente canônico pelo code (uuid do clinica-api)', async () => {
-  const p = getDb().prepare('SELECT id FROM patients WHERE code = ?').get(PATIENT) as { id: number } | undefined;
+  const p = (await getAsyncDb().prepare('SELECT id FROM patients WHERE code = ?').get(PATIENT)) as { id: number } | undefined;
   assert.ok(p);
-  const c = getDb().prepare('SELECT patient_id FROM cases WHERE id = ?').get(caseId) as { patient_id: number };
+  const c = (await getAsyncDb().prepare('SELECT patient_id FROM cases WHERE id = ?').get(caseId)) as { patient_id: number };
   assert.equal(c.patient_id, p.id);
 });
 
 test('auditoria registra cada chamada com user_id nulo e ação integ_*', async () => {
-  const rows = getDb().prepare("SELECT action, entity, user_id, details, request_id FROM audit_log WHERE action LIKE 'integ_%' ORDER BY id").all() as Array<{ action: string; entity: string; user_id: number | null; details: string | null; request_id: string | null }>;
+  const rows = (await getAsyncDb().prepare("SELECT action, entity, user_id, details, request_id FROM audit_log WHERE action LIKE 'integ_%' ORDER BY id").all()) as Array<{ action: string; entity: string; user_id: number | null; details: string | null; request_id: string | null }>;
   const actions = new Set(rows.map((r) => r.action));
   for (const a of ['integ_health', 'integ_patient_cases', 'integ_case', 'integ_create_case', 'integ_analysis', 'integ_patient_markers', 'integ_upload_file', 'integ_export_analysis']) assert.ok(actions.has(a), a);
   assert.ok(rows.every((r) => r.user_id === null && r.request_id));

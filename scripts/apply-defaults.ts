@@ -4,12 +4,11 @@
  * Cria linhas por sexo quando houver, ativa o que tem faixa e deixa em rascunho o resto.
  *   node dist/scripts/apply-defaults.js [--dry]
  */
-import { openDb, getDb, str, num, type Row } from '../src/db.js';
+import { closeDbConnection, openDb, str, num, type Row } from '../src/db.js';
 import { CONTEXT_DEFAULTS, CONTEXT_SOURCE, REFERENCE_DEFAULTS, REFERENCE_SOURCE, type Band } from '../src/engine/reference-defaults.js';
 
 const dry = process.argv.includes('--dry');
-openDb();
-const db = getDb();
+const db = await openDb();
 const today = new Date().toISOString().slice(0, 10);
 const untouched = (source: string) => /^(CATÁLOGO|CATALOGO|EXEMPLO|Pesquisa NutroLab)/i.test(source);
 
@@ -20,14 +19,14 @@ const upd = db.prepare("UPDATE rules SET normal_min=?, normal_max=?, target_min=
 const ins = db.prepare("INSERT INTO rules(exam_canonical, aliases, sex, contexts, unit, system, normal_min, normal_max, target_min, target_max, critical_low, critical_high, target_text, clinical_source, version, reviewed_at, status) VALUES (?, ?, ?, 'geral', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1.0', ?, ?)");
 
 const hasBand = (b: Band | undefined) => !!b && b.some((v) => v !== null);
-const apply = (row: Row, band: Band | undefined, text: string | null, status: string) => {
+const apply = async (row: Row, band: Band | undefined, text: string | null, status: string) => {
   if (dry) return;
   const b = band ?? [null, null, null, null, null, null];
-  upd.run(b[0], b[1], b[2], b[3], b[4], b[5], text, REFERENCE_SOURCE, today, status, num(row, 'id'));
+  await upd.run(b[0], b[1], b[2], b[3], b[4], b[5], text, REFERENCE_SOURCE, today, status, num(row, 'id'));
 };
 
 for (const [exam, d] of Object.entries(REFERENCE_DEFAULTS)) {
-  const rows = db.prepare("SELECT * FROM rules WHERE exam_canonical = ? AND contexts = 'geral' AND age_min IS NULL AND age_max IS NULL").all(exam) as Row[];
+  const rows = (await db.prepare("SELECT * FROM rules WHERE exam_canonical = ? AND contexts = 'geral' AND age_min IS NULL AND age_max IS NULL").all(exam)) as Row[];
   const base = rows.find((r) => str(r, 'sex') === 'todos');
   if (!base) {
     skipped += 1;
@@ -38,14 +37,14 @@ for (const [exam, d] of Object.entries(REFERENCE_DEFAULTS)) {
     continue;
   }
   if (d.text) {
-    apply(base, undefined, d.text, 'ativo');
+    await apply(base, undefined, d.text, 'ativo');
     updated += 1;
     continue;
   }
   if (d.sexOnly) {
-    apply(base, undefined, null, 'inativo');
+    await apply(base, undefined, null, 'inativo');
   } else {
-    apply(base, d.all, null, hasBand(d.all) ? 'ativo' : 'rascunho');
+    await apply(base, d.all, null, hasBand(d.all) ? 'ativo' : 'rascunho');
   }
   updated += 1;
   for (const sex of ['F', 'M'] as const) {
@@ -54,12 +53,12 @@ for (const [exam, d] of Object.entries(REFERENCE_DEFAULTS)) {
     const existing = rows.find((r) => str(r, 'sex') === sex);
     if (existing) {
       if (untouched(str(existing, 'clinical_source'))) {
-        apply(existing, band, null, 'ativo');
+        await apply(existing, band, null, 'ativo');
         updated += 1;
       }
       continue;
     }
-    if (!dry) ins.run(exam, str(base, 'aliases'), sex, str(base, 'unit'), str(base, 'system'), band?.[0] ?? null, band?.[1] ?? null, band?.[2] ?? null, band?.[3] ?? null, band?.[4] ?? null, band?.[5] ?? null, null, REFERENCE_SOURCE, today, 'ativo');
+    if (!dry) await ins.run(exam, str(base, 'aliases'), sex, str(base, 'unit'), str(base, 'system'), band?.[0] ?? null, band?.[1] ?? null, band?.[2] ?? null, band?.[3] ?? null, band?.[4] ?? null, band?.[5] ?? null, null, REFERENCE_SOURCE, today, 'ativo');
     inserted += 1;
   }
 }
@@ -69,25 +68,26 @@ let ctxUpdated = 0;
 const insCtx = db.prepare("INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, system, normal_min, normal_max, target_min, target_max, critical_low, critical_high, clinical_source, version, reviewed_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '1.0', ?, 'ativo')");
 const updCtx = db.prepare("UPDATE rules SET normal_min=?, normal_max=?, target_min=?, target_max=?, critical_low=?, critical_high=?, clinical_source=?, reviewed_at=?, status='ativo', updated_at=datetime('now') WHERE id=?");
 for (const c of CONTEXT_DEFAULTS) {
-  const base = db.prepare('SELECT aliases, unit, system FROM rules WHERE exam_canonical = ? ORDER BY id LIMIT 1').get(c.exam) as Row | undefined;
+  const base = (await db.prepare('SELECT aliases, unit, system FROM rules WHERE exam_canonical = ? ORDER BY id LIMIT 1').get(c.exam)) as Row | undefined;
   if (!base) continue;
   const contexts = c.contexts.join('|');
-  const existing = db.prepare('SELECT id, clinical_source FROM rules WHERE exam_canonical = ? AND sex = ? AND contexts = ? AND IFNULL(age_min,-1) = IFNULL(?, -1) AND IFNULL(age_max,-1) = IFNULL(?, -1)').get(c.exam, c.sex, contexts, c.age_min ?? null, c.age_max ?? null) as Row | undefined;
+  const existing = (await db.prepare('SELECT id, clinical_source FROM rules WHERE exam_canonical = ? AND sex = ? AND contexts = ? AND IFNULL(age_min,-1) = IFNULL(?, -1) AND IFNULL(age_max,-1) = IFNULL(?, -1)').get(c.exam, c.sex, contexts, c.age_min ?? null, c.age_max ?? null)) as Row | undefined;
   const b = c.band;
   if (existing) {
     if (untouched(str(existing, 'clinical_source')) || /^Faixas por fase/.test(str(existing, 'clinical_source'))) {
-      if (!dry) updCtx.run(b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today, num(existing, 'id'));
+      if (!dry) await updCtx.run(b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today, num(existing, 'id'));
       ctxUpdated += 1;
     }
     continue;
   }
-  if (!dry) insCtx.run(c.exam, str(base, 'aliases'), c.sex, c.age_min ?? null, c.age_max ?? null, contexts, str(base, 'unit'), str(base, 'system'), b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today);
+  if (!dry) await insCtx.run(c.exam, str(base, 'aliases'), c.sex, c.age_min ?? null, c.age_max ?? null, contexts, str(base, 'unit'), str(base, 'system'), b[0], b[1], b[2], b[3], b[4], b[5], CONTEXT_SOURCE, today);
   ctxInserted += 1;
 }
 console.log(`faixas por contexto/idade: inseridas ${ctxInserted}, atualizadas ${ctxUpdated}`);
-const counts = db.prepare("SELECT status, COUNT(*) n FROM rules GROUP BY status").all() as Row[];
+const counts = (await db.prepare("SELECT status, COUNT(*) n FROM rules GROUP BY status").all()) as Row[];
 console.log(`${dry ? '[simulação] ' : ''}atualizadas: ${updated}, inseridas por sexo: ${inserted}, puladas (editadas pelo médico ou ausentes): ${skipped}`);
 console.log('status:', counts.map((c) => `${str(c, 'status')}=${num(c, 'n')}`).join(', '));
 if (!dry) {
-  db.prepare("INSERT INTO audit_log(user_id, action, entity, entity_id, details) VALUES (NULL, 'aplicar_faixas_padrao', 'rule', NULL, ?)").run(JSON.stringify({ updated, inserted, skipped, source: REFERENCE_SOURCE }));
+  await db.prepare("INSERT INTO audit_log(user_id, action, entity, entity_id, details) VALUES (NULL, 'aplicar_faixas_padrao', 'rule', NULL, ?)").run(JSON.stringify({ updated, inserted, skipped, source: REFERENCE_SOURCE }));
 }
+await closeDbConnection();

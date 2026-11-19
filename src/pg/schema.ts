@@ -5,7 +5,7 @@
  * continuam texto, como no SQLite). Colunas novas viram ALTER TABLE ADD COLUMN.
  */
 import type { DatabaseSync } from 'node:sqlite';
-import type { Db, Row } from './sync.js';
+import type { AsyncDb, Row } from './api.js';
 import { translateFunctions } from './translate.js';
 
 interface TableDef { name: string; sql: string; refs: string[] }
@@ -50,17 +50,17 @@ export function tableOrder(mem: DatabaseSync): string[] {
 }
 
 /** Cria o que falta no Postgres: tabelas, índices e colunas acrescentadas depois. */
-export function ensurePgSchema(db: Db, mem: DatabaseSync): void {
-  for (const stmt of pgSchemaStatements(mem)) db.exec(stmt);
+export async function ensurePgSchema(db: AsyncDb, mem: DatabaseSync): Promise<void> {
+  for (const stmt of pgSchemaStatements(mem)) await db.exec(stmt);
   const tables = (mem.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all() as Row[]).map((r) => String(r.name));
   for (const table of tables) {
-    const have = new Set((db.prepare('SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?').all(table)).map((r) => String(r.column_name)));
+    const have = new Set((await db.prepare('SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ?').all(table)).map((r) => String(r.column_name)));
     for (const col of mem.prepare(`PRAGMA table_info(${table})`).all() as Row[]) {
       const name = String(col.name);
       if (have.has(name)) continue;
       const dflt = col.dflt_value === null || col.dflt_value === undefined ? '' : ` DEFAULT ${translateFunctions(String(col.dflt_value))}`;
       const notNull = Number(col.notnull) === 1 && dflt ? ' NOT NULL' : '';
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${pgType(String(col.type))}${dflt}${notNull}`);
+      await db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${pgType(String(col.type))}${dflt}${notNull}`);
     }
   }
 }

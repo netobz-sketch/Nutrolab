@@ -44,8 +44,8 @@ export async function patientCases(patientId: number): Promise<PatientCaseRow[]>
     .prepare(`SELECT c.id, c.status, c.created_at, (SELECT MAX(collection_date) FROM results r WHERE r.case_id = c.id) AS last_collection, (SELECT COUNT(*) FROM results r WHERE r.case_id = c.id AND r.excluded = 0) AS results_count, (SELECT score FROM analyses a WHERE a.case_id = c.id ORDER BY a.id DESC LIMIT 1) AS score, (SELECT MAX(id) FROM analyses a WHERE a.case_id = c.id) AS analysis_id FROM cases c WHERE c.patient_id = ? AND c.deleted_at IS NULL ORDER BY c.id DESC`)
     .all(patientId)) as Row[]).map((r) => ({ id: num(r, 'id'), status: str(r, 'status'), created_at: str(r, 'created_at'), last_collection: strOrNull(r, 'last_collection'), results_count: num(r, 'results_count'), score: strOrNull(r, 'score') === null ? null : num(r, 'score'), analysis_id: strOrNull(r, 'analysis_id') === null ? null : num(r, 'analysis_id') }));
 }
-export function consentText(): string {
-  return getSetting('report.consent_text', '') || DEFAULT_CONSENT_TEXT;
+export async function consentText(): Promise<string> {
+  return (await getSetting('report.consent_text', '')) || DEFAULT_CONSENT_TEXT;
 }
 
 export async function patientsRoutes(app: FastifyInstance): Promise<void> {
@@ -55,17 +55,17 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
     const q = (request.query as { q?: string }).q ?? '';
     return page(request, reply, 'Pacientes', patientsPage(await allPatients(q), q));
   });
-  app.get('/pacientes/novo', async (request, reply) => page(request, reply, 'Novo paciente', patientFormPage(null, null, nextPatientCode())));
+  app.get('/pacientes/novo', async (request, reply) => page(request, reply, 'Novo paciente', patientFormPage(null, null, (await nextPatientCode()))));
 
   const save = async (request: FastifyRequest, reply: FastifyReply, id: number | null) => {
     const parsed = PatientBody.safeParse(request.body);
     const current = id ? await loadPatient(id) : null;
     if (id && !current) return reply.code(404).send('Paciente não encontrado');
-    if (!parsed.success) return page(request, reply, 'Paciente', patientFormPage(current, parsed.error.issues[0]?.message ?? 'Dados inválidos.', nextPatientCode()));
+    if (!parsed.success) return page(request, reply, 'Paciente', patientFormPage(current, parsed.error.issues[0]?.message ?? 'Dados inválidos.', (await nextPatientCode())));
     const d = parsed.data;
-    const code = d.code || current?.code || nextPatientCode();
+    const code = d.code || current?.code || (await nextPatientCode());
     const clash = (await getAsyncDb().prepare('SELECT id FROM patients WHERE code = ? AND id != IFNULL(?, -1)').get(code, id)) as Row | undefined;
-    if (clash) return page(request, reply, 'Paciente', patientFormPage(current, `código ${code} já usado por outro paciente`, nextPatientCode()));
+    if (clash) return page(request, reply, 'Paciente', patientFormPage(current, `código ${code} já usado por outro paciente`, (await nextPatientCode())));
     let pid = id;
     if (id) {
       (await getAsyncDb().prepare("UPDATE patients SET code=?, name=?, birth_date=?, sex=?, phone=?, email=?, comorbidities=?, medications=?, supplements=?, goal=?, notes=?, updated_at=datetime('now') WHERE id=?").run(code, d.name, d.birth_date || null, d.sex || null, d.phone, d.email, d.comorbidities, d.medications, d.supplements, d.goal, d.notes, id));
@@ -73,7 +73,7 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
     } else {
       pid = Number((await getAsyncDb().prepare('INSERT INTO patients(code, name, birth_date, sex, phone, email, comorbidities, medications, supplements, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, d.name, d.birth_date || null, d.sex || null, d.phone, d.email, d.comorbidities, d.medications, d.supplements, d.goal, d.notes, request.user?.id ?? null)).lastInsertRowid);
     }
-    audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'patient', pid, { code, changed: Object.keys(d) }, request.id);
+    await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'patient', pid, { code, changed: Object.keys(d) }, request.id);
     return redirectMsg(reply, `/pacientes/${pid}`, id ? 'Paciente atualizado.' : 'Paciente cadastrado. Registre o consentimento LGPD e abra o primeiro caso.');
   };
   app.post('/pacientes', async (request, reply) => save(request, reply, null));
@@ -97,8 +97,8 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/pacientes/:id/termo', async (request, reply) => {
     const p = await loadPatient(Number((request.params as { id: string }).id));
     if (!p) return reply.code(404).send('Paciente não encontrado');
-    audit(request.user?.id ?? null, 'imprimir_termo', 'patient', p.id, { version: CONSENT_VERSION }, request.id);
-    return reply.type('text/html; charset=utf-8').send(layout({ title: `Termo de consentimento · ${p.code}`, user: request.user, body: consentPrintPage(p, consentText(), CONSENT_VERSION, getSetting('report.clinic_name', ''), getSetting('report.signature', '')), print: true }));
+    await audit(request.user?.id ?? null, 'imprimir_termo', 'patient', p.id, { version: CONSENT_VERSION }, request.id);
+    return reply.type('text/html; charset=utf-8').send(layout({ title: `Termo de consentimento · ${p.code}`, user: request.user, body: consentPrintPage(p, (await consentText()), CONSENT_VERSION, (await getSetting('report.clinic_name', '')), (await getSetting('report.signature', ''))), print: true }));
   });
 
   app.post('/pacientes/:id/consentimento', async (request, reply) => {
@@ -133,7 +133,7 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
     const when = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10);
     if (storedFile && p.consent_file) fs.rmSync(path.join(CONSENT_DIR, p.consent_file), { force: true });
     (await getAsyncDb().prepare("UPDATE patients SET consent_status=?, consent_at=?, consent_method=?, consent_version=?, consent_file=COALESCE(?, consent_file), consent_by=?, updated_at=datetime('now') WHERE id=?").run(status, status === 'pendente' ? null : when, method, CONSENT_VERSION, storedFile, request.user?.id ?? null, id));
-    audit(request.user?.id ?? null, 'consentimento', 'patient', id, { status, method, date: when, file: !!storedFile, version: CONSENT_VERSION }, request.id);
+    await audit(request.user?.id ?? null, 'consentimento', 'patient', id, { status, method, date: when, file: !!storedFile, version: CONSENT_VERSION }, request.id);
     return redirectMsg(reply, `/pacientes/${id}`, `Consentimento registrado: ${status}.`);
   });
 
@@ -141,7 +141,7 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
     const p = await loadPatient(Number((request.params as { id: string }).id));
     if (!p || !p.consent_file) return reply.code(404).send('Sem arquivo');
     const ext = p.consent_file.split('.').pop();
-    audit(request.user?.id ?? null, 'ver_termo', 'patient', p.id, null, request.id);
+    await audit(request.user?.id ?? null, 'ver_termo', 'patient', p.id, null, request.id);
     return reply.type(ext === 'pdf' ? 'application/pdf' : ext === 'png' ? 'image/png' : 'image/jpeg').send(fs.createReadStream(path.join(CONSENT_DIR, p.consent_file)));
   });
 
@@ -156,7 +156,7 @@ export async function patientsRoutes(app: FastifyInstance): Promise<void> {
     }
     if (p.consent_file) fs.rmSync(path.join(CONSENT_DIR, p.consent_file), { force: true });
     (await getAsyncDb().prepare("UPDATE patients SET deleted_at = datetime('now'), name = 'excluído', phone = '', email = '', notes = '', consent_file = NULL WHERE id = ?").run(id));
-    audit(request.user?.id ?? null, 'excluir', 'patient', id, { code: p.code }, request.id);
+    await audit(request.user?.id ?? null, 'excluir', 'patient', id, { code: p.code }, request.id);
     return redirectMsg(reply, '/pacientes', 'Paciente, casos e arquivos excluídos.');
   });
 }

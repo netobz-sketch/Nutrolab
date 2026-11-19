@@ -96,6 +96,6 @@ chamada vai para a auditoria com ação `integ_*`; nenhuma rota devolve nome de 
 O serviço `nutrolab` no `docker-compose.yml`, o `Caddyfile` e o `db-init` da stack vêm do repo
 clinica-api/deploy (dono: aba 6d); este repo não os altera.
 
-Banco: SQLite em `DATA_DIR` por padrão; Postgres quando `DATABASE_URL` existir (ponte síncrona transitória,
-`src/pg/`). Ensaio da suíte no Postgres: `bash scripts/test-pg-ensaio.sh`. Cópia SQLite → Postgres com validação:
+Banco: SQLite em `DATA_DIR` por padrão; Postgres quando `DATABASE_URL` existir (acesso assíncrono,
+`src/pg/pgdb.ts`). Ensaio da suíte no Postgres: `bash scripts/test-pg-ensaio.sh`; smoke do servidor real no ensaio: `bash scripts/smoke-ensaio.sh`. Cópia SQLite → Postgres com validação:
 `DATABASE_URL=… node dist/scripts/migrate-to-postgres.js --sqlite <cópia> [--dry]`. Plano: `docs/MIGRACAO-POSTGRES.md`.

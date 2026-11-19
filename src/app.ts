@@ -5,7 +5,7 @@ import multipart from '@fastify/multipart';
 import { bootstrapAdmin, COOKIE_NAME, sessionUser } from './auth.js';
 import { userFromBearer } from './sso.js';
 import { aiEnabled, AI_MODEL } from './ai.js';
-import { openDb } from './db.js';
+import { closeDbConnection, openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { casesRoutes } from './routes/cases.routes.js';
 import { configRoutes } from './routes/config.routes.js';
@@ -25,7 +25,9 @@ await app.register(cookie);
 await app.register(formbody);
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 10 } });
 
-openDb();
+await openDb();
+// Fechar o app fecha a conexão com o banco (testes e desligamento): a conexão do Postgres segura o processo vivo.
+app.addHook('onClose', async () => closeDbConnection());
 await bootstrapAdmin((msg) => app.log.warn(msg));
 
 app.decorateRequest('user', null);

@@ -1,9 +1,9 @@
 import type { SessionUser } from '../auth.js';
-import { getSetting } from '../db.js';
+import { cachedSetting } from '../db.js';
 
 function logoVersion(): string {
   try {
-    return getSetting('report.logo', '');
+    return cachedSetting('report.logo', '');
   } catch {
     return '';
   }

@@ -1,8 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
-import { asyncOf, PgSyncDb, type AsyncDb, type Db } from './pg/sync.js';
+import { asyncOf, type AsyncDb, type Db } from './pg/api.js';
+import { PgDb } from './pg/pgdb.js';
 import { ensurePgSchema } from './pg/schema.js';
 
-export type { AsyncDb, Db } from './pg/sync.js';
+export type { AsyncDb } from './pg/api.js';
 
 /** Postgres quando DATABASE_URL existir; senão SQLite (padrão). */
 export function usingPostgres(): boolean {
@@ -303,38 +304,38 @@ function migrate(database: DatabaseSync): void {
   database.exec(EXTRA_SCHEMA);
 }
 
-let db: Db | null = null;
 let adb: AsyncDb | null = null;
+let closeDb: (() => Promise<void>) | null = null;
+// Quantos usuários abriram o banco (cada app do Fastify, cada script): a conexão fecha no último.
+let openers = 0;
 let testResetDone = false;
 
-export function getDb(): Db {
-  if (!db) throw new Error('banco não inicializado');
-  return db;
-}
-
-/** API assíncrona do mesmo banco (refactor gradual: módulo a módulo deixa a ponte síncrona). */
+/** Acesso ao banco (SQLite local ou Postgres): toda consulta é assíncrona. */
 export function getAsyncDb(): AsyncDb {
   if (!adb) throw new Error('banco não inicializado');
   return adb;
 }
 
-export function openDb(): Db {
+/** Abre o banco uma vez por processo (chamadas seguintes reaproveitam a conexão). */
+export async function openDb(): Promise<AsyncDb> {
+  openers += 1;
+  if (adb) return adb;
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   fs.mkdirSync(BRAND_DIR, { recursive: true });
   fs.mkdirSync(FORMULARY_DIR, { recursive: true });
   fs.mkdirSync(CONSENT_DIR, { recursive: true });
+  let database: AsyncDb;
   if (usingPostgres()) {
-    // Ponte síncrona TRANSITÓRIA para o Postgres (ver src/pg/sync.ts e docs/decisions.md):
-    // a refatoração da camada de acesso para async é tarefa futura.
-    const pgdb = new PgSyncDb(process.env.DATABASE_URL as string);
+    const pgdb = new PgDb(process.env.DATABASE_URL as string);
+    await pgdb.connect();
     // Só em teste e uma vez por processo: cada arquivo de teste começa com o banco de ensaio vazio.
     if (process.env.NODE_ENV === 'test' && process.env.NUTROLAB_TEST_RESET_PG === '1' && !testResetDone) {
-      pgdb.exec('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
+      await pgdb.exec('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
       testResetDone = true;
     }
-    ensurePgSchema(pgdb, schemaReference());
-    db = pgdb;
-    adb = pgdb.async;
+    await ensurePgSchema(pgdb, schemaReference());
+    database = pgdb;
+    closeDb = () => pgdb.close();
   } else {
     const sqlite = new DatabaseSync(DB_PATH);
     sqlite.exec('PRAGMA journal_mode = WAL');
@@ -342,13 +343,26 @@ export function openDb(): Db {
     sqlite.exec('PRAGMA busy_timeout = 5000');
     sqlite.exec(SCHEMA);
     migrate(sqlite);
-    db = sqlite as unknown as Db;
-    adb = asyncOf(db);
+    database = asyncOf(sqlite as unknown as Db);
+    closeDb = async () => sqlite.close();
   }
-  seedDefaults(db);
-  seedCatalog(db);
-  backfillPatients(db);
-  return db;
+  await seedDefaults(database);
+  await seedCatalog(database);
+  await backfillPatients(database);
+  settingCache.clear();
+  for (const r of (await database.prepare('SELECT key, value FROM settings').all()) as Row[]) settingCache.set(str(r, 'key'), str(r, 'value'));
+  adb = database;
+  return database;
+}
+
+/** Libera o banco; a conexão fecha quando o último usuário libera (senão o Postgres segura o processo vivo). */
+export async function closeDbConnection(): Promise<void> {
+  openers = Math.max(0, openers - 1);
+  if (openers > 0) return;
+  const close = closeDb;
+  adb = null;
+  closeDb = null;
+  if (close) await close();
 }
 
 /** SQLite em memória com o schema completo: fonte única do DDL do Postgres. */
@@ -404,36 +418,49 @@ export function rowToGuidance(row: Row): Guidance {
   };
 }
 
-export function allRules(): Rule[] {
-  return (getDb().prepare('SELECT * FROM rules ORDER BY exam_canonical, status, id').all() as Row[]).map(rowToRule);
+export async function allRules(): Promise<Rule[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM rules ORDER BY exam_canonical, status, id').all()) as Row[]).map(rowToRule);
 }
-export function allGuidances(): Guidance[] {
-  return (getDb().prepare('SELECT * FROM guidances ORDER BY code').all() as Row[]).map(rowToGuidance);
+export async function allGuidances(): Promise<Guidance[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM guidances ORDER BY code').all()) as Row[]).map(rowToGuidance);
 }
 
-export function getSetting(key: string, fallback: string): string {
-  const row = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined;
+/**
+ * Cópia em memória da tabela settings, para as views (síncronas) lerem a versão do
+ * logo sem consulta. Carregada no openDb e atualizada por setSetting; um processo só
+ * escreve settings (o serviço), então a cópia não fica velha.
+ */
+const settingCache = new Map<string, string>();
+export function cachedSetting(key: string, fallback: string): string {
+  return settingCache.get(key) ?? fallback;
+}
+
+export async function getSetting(key: string, fallback: string): Promise<string> {
+  const row = (await getAsyncDb().prepare('SELECT value FROM settings WHERE key = ?').get(key)) as Row | undefined;
   return row ? str(row, 'value') : fallback;
 }
-export function setSetting(key: string, value: string): void {
-  getDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+export async function setSetting(key: string, value: string): Promise<void> {
+  await getAsyncDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value);
+  settingCache.set(key, value);
 }
-export function enabledCalcIds(): Set<string> {
-  return new Set(CALCS.filter((c) => getSetting(`calc.${c.id}`, c.id === 'tyg' ? '0' : '1') === '1').map((c) => c.id));
+export async function enabledCalcIds(): Promise<Set<string>> {
+  const on = new Set<string>();
+  for (const c of CALCS) if ((await getSetting(`calc.${c.id}`, c.id === 'tyg' ? '0' : '1')) === '1') on.add(c.id);
+  return on;
 }
 
 /** Versão da tabela clínica: maior data de revisão entre regras ativas + contagem. */
-export function tableVersion(): string {
-  const row = getDb()
+export async function tableVersion(): Promise<string> {
+  const row = (await getAsyncDb()
     .prepare("SELECT MAX(reviewed_at) AS d, COUNT(*) AS n FROM rules WHERE status = 'ativo'")
-    .get() as Row;
+    .get()) as Row;
   const n = num(row, 'n');
   return n === 0 ? 'sem regras ativas' : `${str(row, 'd')} (${n} regras ativas)`;
 }
 
-export function audit(userId: number | null, action: string, entity: string, entityId: string | number | null, details: unknown, requestId?: string): void {
+export async function audit(userId: number | null, action: string, entity: string, entityId: string | number | null, details: unknown, requestId?: string): Promise<void> {
   try {
-    getDb()
+    await getAsyncDb()
       .prepare('INSERT INTO audit_log(user_id, action, entity, entity_id, details, request_id) VALUES (?, ?, ?, ?, ?, ?)')
       .run(userId, action, entity, entityId === null ? null : String(entityId), details === undefined ? null : JSON.stringify(details), requestId ?? null);
   } catch {
@@ -464,8 +491,8 @@ export function parseCsv(text: string): Row[] {
   });
 }
 
-function seedDefaults(database: Db): void {
-  const rulesCount = num(database.prepare('SELECT COUNT(*) AS n FROM rules').get() as Row, 'n');
+async function seedDefaults(database: AsyncDb): Promise<void> {
+  const rulesCount = num((await database.prepare('SELECT COUNT(*) AS n FROM rules').get()) as Row, 'n');
   if (rulesCount === 0) {
     const seedPath = path.resolve('seed/valores-otimizados.csv');
     let seedText: string | null = null;
@@ -482,7 +509,7 @@ function seedDefaults(database: Db): void {
       );
       for (const r of parseCsv(seedText)) {
         const n = (k: string) => (str(r, k) === '' ? null : Number(str(r, k)));
-        insert.run(
+        await insert.run(
           str(r, 'exame_canonico'), str(r, 'aliases'), str(r, 'sexo') || 'todos', n('idade_min'), n('idade_max'),
           str(r, 'contexto') || 'geral', str(r, 'unidade'), n('alvo_min'), n('alvo_max'), strOrNull(r, 'alvo_texto'),
           n('limite_critico_inferior'), n('limite_critico_superior'), str(r, 'orientacao_id'),
@@ -491,19 +518,19 @@ function seedDefaults(database: Db): void {
       }
     }
   }
-  const guidanceCount = num(database.prepare('SELECT COUNT(*) AS n FROM guidances').get() as Row, 'n');
+  const guidanceCount = num((await database.prepare('SELECT COUNT(*) AS n FROM guidances').get()) as Row, 'n');
   if (guidanceCount === 0) {
     const insert = database.prepare(
       `INSERT INTO guidances(code, title, exam_canonical, trigger, contexts_excluded, not_apply_note, patient_text, requires_alert, clinical_source, version, reviewed_at, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '1.0', '2026-10-28', 'rascunho')`,
     );
-    insert.run(
+    await insert.run(
       'ORIENT-VITD-BAIXA', 'Vitamina D abaixo do alvo (exemplo de formato)', 'vitamina_d_25oh', 'abaixo_do_alvo', 'gestacao',
       'Uso atual de suplemento de vitamina D não informado; resultado com confiança baixa.',
       'Seu nível de vitamina D ficou abaixo do que consideramos ideal para o seu acompanhamento. Isso é comum e, na maioria das vezes, ajustável. Vamos conversar na consulta sobre a melhor forma de corrigir no seu caso.',
       0, 'EXEMPLO DE FORMATO - substituir pela decisão do médico',
     );
-    insert.run(
+    await insert.run(
       'ORIENT-ALERTA-CRITICO', 'Resultado fora de limite crítico cadastrado (exemplo de formato)', null, 'critico', '',
       'Resultado com confiança baixa ou marcado para revisão manual sem confirmação visual da página.',
       'Um dos seus exames apresentou um valor que precisa ser avaliado com prioridade. Por favor, entre em contato com a clínica hoje para que possamos orientar os próximos passos.',
@@ -710,34 +737,34 @@ const CATALOG: Array<[exam: string, aliases: string, system: string, unit: strin
   ['beta_hcg', 'Beta-HCG', 'outros', 'mUI/mL', null, 5],
 ];
 
-function seedCatalog(database: Db): void {
-  const existing = new Set((database.prepare('SELECT DISTINCT exam_canonical FROM rules').all() as Row[]).map((r) => str(r, 'exam_canonical')));
+async function seedCatalog(database: AsyncDb): Promise<void> {
+  const existing = new Set(((await database.prepare('SELECT DISTINCT exam_canonical FROM rules').all()) as Row[]).map((r) => str(r, 'exam_canonical')));
   const insert = database.prepare(
     `INSERT INTO rules(exam_canonical, aliases, sex, contexts, unit, system, normal_min, normal_max, clinical_source, version, reviewed_at, status)
      VALUES (?, ?, 'todos', 'geral', ?, ?, ?, ?, 'CATÁLOGO INICIAL: faixa de normalidade laboratorial usual em adultos; conferir com o laboratório e definir o alvo ótimo antes de ativar', '1.0', '2026-10-29', 'rascunho')`,
   );
   for (const [exam, aliases, system, unit, nmin, nmax] of CATALOG) {
     if (existing.has(exam)) {
-      database.prepare("UPDATE rules SET system = ? WHERE exam_canonical = ? AND system = 'outros'").run(system, exam);
+      await database.prepare("UPDATE rules SET system = ? WHERE exam_canonical = ? AND system = 'outros'").run(system, exam);
       continue;
     }
-    insert.run(exam, aliases, unit, system, nmin, nmax);
+    await insert.run(exam, aliases, unit, system, nmin, nmax);
   }
 }
 
 export interface ReportSettingsRow { clinic_name: string; clinic_info: string; signature: string; patient_intro: string; patient_closing: string; technical_footer: string; show_score: boolean; show_systems: boolean; show_guidances: boolean; logo: string }
-export function reportSettings(): ReportSettingsRow {
+export async function reportSettings(): Promise<ReportSettingsRow> {
   return {
-    clinic_name: getSetting('report.clinic_name', ''),
-    clinic_info: getSetting('report.clinic_info', ''),
-    signature: getSetting('report.signature', ''),
-    patient_intro: getSetting('report.patient_intro', ''),
-    patient_closing: getSetting('report.patient_closing', ''),
-    technical_footer: getSetting('report.technical_footer', ''),
-    show_score: getSetting('report.show_score', '1') === '1',
-    show_systems: getSetting('report.show_systems', '1') === '1',
-    show_guidances: getSetting('report.show_guidances', '1') === '1',
-    logo: getSetting('report.logo', ''),
+    clinic_name: (await getSetting('report.clinic_name', '')),
+    clinic_info: (await getSetting('report.clinic_info', '')),
+    signature: (await getSetting('report.signature', '')),
+    patient_intro: (await getSetting('report.patient_intro', '')),
+    patient_closing: (await getSetting('report.patient_closing', '')),
+    technical_footer: (await getSetting('report.technical_footer', '')),
+    show_score: (await getSetting('report.show_score', '1')) === '1',
+    show_systems: (await getSetting('report.show_systems', '1')) === '1',
+    show_guidances: (await getSetting('report.show_guidances', '1')) === '1',
+    logo: (await getSetting('report.logo', '')),
   };
 }
 
@@ -745,21 +772,21 @@ export interface Formula { id: number; name: string; kind: 'manipulada' | 'medic
 export function rowToFormula(row: Row): Formula {
   return { id: num(row, 'id'), name: str(row, 'name'), kind: str(row, 'kind') as Formula['kind'], composition: str(row, 'composition'), posology: str(row, 'posology'), indications: str(row, 'indications'), exams: list(str(row, 'exams')), contraindications: str(row, 'contraindications'), notes: str(row, 'notes'), status: str(row, 'status') as Status };
 }
-export function allFormulas(): Formula[] {
-  return (getDb().prepare('SELECT * FROM formulas ORDER BY kind, name').all() as Row[]).map(rowToFormula);
+export async function allFormulas(): Promise<Formula[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM formulas ORDER BY kind, name').all()) as Row[]).map(rowToFormula);
 }
 
 /** Casos antigos sem paciente: cria um paciente por código e vincula. */
-function backfillPatients(database: Db): void {
-  const orphans = database.prepare('SELECT * FROM cases WHERE patient_id IS NULL AND deleted_at IS NULL ORDER BY id').all() as Row[];
+async function backfillPatients(database: AsyncDb): Promise<void> {
+  const orphans = (await database.prepare('SELECT * FROM cases WHERE patient_id IS NULL AND deleted_at IS NULL ORDER BY id').all()) as Row[];
   for (const c of orphans) {
     const code = str(c, 'patient_code') || `P-${String(num(c, 'id')).padStart(4, '0')}`;
-    let patient = database.prepare('SELECT id FROM patients WHERE code = ?').get(code) as Row | undefined;
+    let patient = (await database.prepare('SELECT id FROM patients WHERE code = ?').get(code)) as Row | undefined;
     if (!patient) {
-      database.prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, str(c, 'patient_name') || code, strOrNull(c, 'birth_date'), strOrNull(c, 'sex'), str(c, 'comorbidities'), str(c, 'medications'), str(c, 'supplements'), str(c, 'goal'), numOrNull(c, 'created_by'));
-      patient = database.prepare('SELECT id FROM patients WHERE code = ?').get(code) as Row;
+      await database.prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, str(c, 'patient_name') || code, strOrNull(c, 'birth_date'), strOrNull(c, 'sex'), str(c, 'comorbidities'), str(c, 'medications'), str(c, 'supplements'), str(c, 'goal'), numOrNull(c, 'created_by'));
+      patient = (await database.prepare('SELECT id FROM patients WHERE code = ?').get(code)) as Row;
     }
-    database.prepare('UPDATE cases SET patient_id = ? WHERE id = ?').run(num(patient, 'id'), num(c, 'id'));
+    await database.prepare('UPDATE cases SET patient_id = ? WHERE id = ?').run(num(patient, 'id'), num(c, 'id'));
   }
 }
 
@@ -767,8 +794,8 @@ export interface Patient { id: number; code: string; name: string; birth_date: s
 export function rowToPatient(row: Row): Patient {
   return { id: num(row, 'id'), code: str(row, 'code'), name: str(row, 'name'), birth_date: strOrNull(row, 'birth_date'), sex: (strOrNull(row, 'sex') as Patient['sex']) ?? null, phone: str(row, 'phone'), email: str(row, 'email'), comorbidities: str(row, 'comorbidities'), medications: str(row, 'medications'), supplements: str(row, 'supplements'), goal: str(row, 'goal'), notes: str(row, 'notes'), consent_status: str(row, 'consent_status') as Patient['consent_status'], consent_at: strOrNull(row, 'consent_at'), consent_method: str(row, 'consent_method'), consent_version: str(row, 'consent_version'), consent_file: strOrNull(row, 'consent_file'), created_at: str(row, 'created_at') };
 }
-export function nextPatientCode(): string {
-  const row = getDb().prepare("SELECT MAX(id) AS m FROM patients").get() as Row;
+export async function nextPatientCode(): Promise<string> {
+  const row = (await getAsyncDb().prepare("SELECT MAX(id) AS m FROM patients").get()) as Row;
   return `P-${String((numOrNull(row, 'm') ?? 0) + 1).padStart(4, '0')}`;
 }
 
@@ -782,8 +809,8 @@ export function rowToTemplate(row: Row): ConductTemplate {
   }
   return { id: num(row, 'id'), name: str(row, 'name'), profile: str(row, 'profile'), triggers: list(str(row, 'triggers')), items, status: str(row, 'status') as ConductTemplate['status'] };
 }
-export function allTemplates(): ConductTemplate[] {
-  return (getDb().prepare('SELECT * FROM conduct_templates ORDER BY name').all() as Row[]).map(rowToTemplate);
+export async function allTemplates(): Promise<ConductTemplate[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM conduct_templates ORDER BY name').all()) as Row[]).map(rowToTemplate);
 }
 
 export const CONSENT_VERSION = '2026-11';
