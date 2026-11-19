@@ -104,7 +104,7 @@ test('POST /cases valida, cria caso aberto sem autor e com nota prefixada; GET p
   caseId = created.json().data.id;
   assert.ok(caseId > 0);
   assert.equal(created.json().data.url, `https://nutrolab.teste.local/casos/${caseId}`);
-  const row = loadCase(caseId);
+  const row = await loadCase(caseId);
   assert.ok(row);
   assert.equal(row.status, 'aberto');
   assert.match(row.notes, /^Criado pelo LN Evolution em \d{2}\/\d{2}\/\d{4}\.\nRetorno em 90 dias\.$/);
@@ -143,9 +143,9 @@ test('GET /analyses/:id: score, scoreBySystem, markers, highlights e relatórios
   insert.run(caseId, 'Exame excluído', null, '1', 'mg/dL', null, null, '2026-10-15', 'baixa', 1);
 
   // Análise montada pelo motor e pelos geradores de relatório, como faz /casos/:id/analisar.
-  const c = loadCase(caseId);
+  const c = await loadCase(caseId);
   assert.ok(c);
-  const results = loadResults(caseId).filter((r) => !r.excluded);
+  const results = (await loadResults(caseId)).filter((r) => !r.excluded);
   const profile = profileOf(c);
   const evals = evaluateAll(toInputs(results), allRules(), profile);
   const score = computeScore(evals);
@@ -241,9 +241,9 @@ test('GET /patients/:code/markers: séries cronológicas só de análises finali
   const ins = db.prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, collection_date, confidence, origin, checked, excluded) VALUES (?, ?, NULL, ?, ?, ?, 'alta', 'manual', 1, 0)");
   ins.run(case2, 'Vitamina D', '18', 'ng/mL', '2026-04-02');
   ins.run(case2, 'Glicose', '101', 'mg/dL', '2026-04-02');
-  const c2 = loadCase(case2);
+  const c2 = await loadCase(case2);
   assert.ok(c2);
-  const evals2 = evaluateAll(toInputs(loadResults(case2)), allRules(), profileOf(c2));
+  const evals2 = evaluateAll(toInputs(await loadResults(case2)), allRules(), profileOf(c2));
   const score2 = computeScore(evals2);
   const mk = (final: boolean) => db.prepare(`INSERT INTO analyses(case_id, markdown, markdown_patient, table_version, ai_used, score, score_json, final_patient, finalized_at) VALUES (?, 'x', 'x', ?, 0, ?, ?, ${final ? "'x', datetime('now')" : 'NULL, NULL'})`).run(case2, tableVersion(), score2.total, JSON.stringify(score2));
   const finalized2 = Number(mk(true).lastInsertRowid);

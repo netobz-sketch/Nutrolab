@@ -188,8 +188,8 @@ function markerOf(ev: Evaluation, catalog: Map<string, CatalogEntry>): Integrati
 }
 
 /** Classificação de cada linha de `results` do caso (não excluídas) pelas regras ATIVAS do motor. */
-function evaluateCaseResults(c: CaseRow): Evaluation[] {
-  const results = loadResults(c.id).filter((r) => !r.excluded);
+async function evaluateCaseResults(c: CaseRow): Promise<Evaluation[]> {
+  const results = (await loadResults(c.id)).filter((r) => !r.excluded);
   return evaluateAll(toInputs(results), allRules(), profileOf(c));
 }
 
@@ -323,12 +323,17 @@ async function toIntegrationCase(c: CaseRow, analyses: AnalysisRecord[]): Promis
 
 async function casesOfPatient(patientCode: string): Promise<CaseRow[]> {
   const ids = ((await getAsyncDb().prepare('SELECT id FROM cases WHERE patient_code = ? AND deleted_at IS NULL ORDER BY updated_at DESC, id DESC').all(patientCode)) as Row[]).map((r) => num(r, 'id'));
-  return ids.map(loadCase).filter((c): c is CaseRow => c !== null);
+  const out: CaseRow[] = [];
+  for (const id of ids) {
+    const c = await loadCase(id);
+    if (c) out.push(c);
+  }
+  return out;
 }
 
 async function buildAnalysis(c: CaseRow, a: AnalysisRecord): Promise<IntegrationAnalysis> {
   const catalog = catalogIndex(allRules());
-  const evals = evaluateCaseResults(c);
+  const evals = await evaluateCaseResults(c);
   const markers = evals.map((ev) => markerOf(ev, catalog));
   const stored = parseScore(a.scoreJson);
   const scored = new Map((stored?.bySystem ?? []).map((s) => [s.system, s]));
@@ -370,7 +375,7 @@ async function markerSeries(patientCode: string, exams: Set<string> | null, limi
   for (const c of await casesOfPatient(patientCode)) {
     const finalizedAnalyses = (await analysesOfCase(c.id)).filter((a) => a.finalizedAt !== null).sort((x, y) => x.id - y.id);
     if (!finalizedAnalyses.length) continue;
-    const evals = evaluateCaseResults(c);
+    const evals = await evaluateCaseResults(c);
     for (const a of finalizedAnalyses) {
       for (const ev of evals) {
         const marker = markerOf(ev, catalog);
@@ -509,7 +514,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
 
   app.get('/cases/:id', async (request, reply) => {
     const id = idParam(request, 'id');
-    const c = id === null ? null : loadCase(id);
+    const c = id === null ? null : await loadCase(id);
     if (!c) return sendError(reply, ERR.notFound, 'Caso não encontrado.');
     const analyses = await analysesOfCase(c.id);
     record(request, 'case', 'case', c.id, { patient_code: c.patient_code });
@@ -544,7 +549,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
   app.get('/analyses/:id', async (request, reply) => {
     const id = idParam(request, 'id');
     const a = id === null ? null : await analysisById(id);
-    const c = a ? loadCase(a.caseId) : null;
+    const c = a ? await loadCase(a.caseId) : null;
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
     record(request, 'analysis', 'analysis', a.id, { patient_code: c.patient_code, case_id: c.id });
     return { data: await buildAnalysis(c, a) };
@@ -564,7 +569,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
   /* ------------------------------------------------------------- v2 */
   app.post('/cases/:id/files', async (request, reply) => {
     const id = idParam(request, 'id');
-    const c = id === null ? null : loadCase(id);
+    const c = id === null ? null : await loadCase(id);
     if (!c) return sendError(reply, ERR.notFound, 'Caso não encontrado.');
     if (!request.isMultipart()) return reply.code(400).send({ error: { code: 'VALIDATION', message: 'Envie multipart/form-data com um arquivo.' } });
     let fileId: number | null = null;
@@ -575,7 +580,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
         rejected = true;
         continue;
       }
-      fileId = storeCaseFile(c.id, buf, part.filename);
+      fileId = await storeCaseFile(c.id, buf, part.filename);
       if (fileId === null) rejected = true;
     }
     if (fileId === null) {
@@ -588,7 +593,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
   app.get('/analyses/:id/export', async (request, reply) => {
     const id = idParam(request, 'id');
     const a = id === null ? null : await analysisById(id);
-    const c = a ? loadCase(a.caseId) : null;
+    const c = a ? await loadCase(a.caseId) : null;
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
     const q = request.query as { format?: string; type?: string };
     const format = q.format === 'html' ? 'html' : q.format === 'md' || q.format === undefined ? 'md' : null;

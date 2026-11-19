@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { z } from 'zod';
 import { requireAuth, requireAdmin } from '../auth.js';
 import { AiError, AI_MODEL, aiEnabled, extractFromFile, suggestConduct, suggestFormulas, writeReports, type Reports } from '../ai.js';
-import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getDb, list, num, numOrNull, reportSettings, str, strOrNull, tableVersion, UPLOAD_DIR, type Formula, type Row } from '../db.js';
+import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getAsyncDb, list, num, numOrNull, reportSettings, str, strOrNull, tableVersion, UPLOAD_DIR, type Formula, type Row } from '../db.js';
 import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS, evaluateAll, evaluateResult, gaugeSvg, type Evaluation, type PatientProfile, type ResultInput } from '../engine/index.js';
 import { renderMarkdown } from '../markdown.js';
 import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, hormonalWarnings, type ConductItem, type ReportInput } from '../report.js';
@@ -30,15 +30,15 @@ export function sniffMime(buf: Buffer): FileMime | null {
 }
 
 /** Grava um anexo do caso (mesmo pipeline da tela e da integração). Devolve o id ou null se o formato não for aceito. */
-export function storeCaseFile(caseId: number, buf: Buffer, filename: string | undefined): number | null {
+export async function storeCaseFile(caseId: number, buf: Buffer, filename: string | undefined): Promise<number | null> {
   const mime = sniffMime(buf);
   if (!mime || buf.length > MAX_PDF) return null;
   const ext = mime === 'application/pdf' ? 'pdf' : mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
   const stored = `${caseId}-${crypto.randomUUID()}.${ext}`;
   fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
   const original = path.basename(filename || `exames.${ext}`).slice(0, 120);
-  const info = getDb().prepare('INSERT INTO case_files(case_id, original_name, stored_name, size, mime) VALUES (?, ?, ?, ?, ?)').run(caseId, original, stored, buf.length, mime);
-  getDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(caseId);
+  const info = (await getAsyncDb().prepare('INSERT INTO case_files(case_id, original_name, stored_name, size, mime) VALUES (?, ?, ?, ?, ?)').run(caseId, original, stored, buf.length, mime));
+  (await getAsyncDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(caseId));
   return Number(info.lastInsertRowid);
 }
 
@@ -124,13 +124,13 @@ export function rowToCase(row: Row): CaseRow {
   };
 }
 
-export function loadCase(id: number): CaseRow | null {
-  const row = getDb().prepare('SELECT * FROM cases WHERE id = ? AND deleted_at IS NULL').get(id) as Row | undefined;
+export async function loadCase(id: number): Promise<CaseRow | null> {
+  const row = (await getAsyncDb().prepare('SELECT * FROM cases WHERE id = ? AND deleted_at IS NULL').get(id)) as Row | undefined;
   return row ? rowToCase(row) : null;
 }
 
-export function loadResults(caseId: number): ResultRow[] {
-  return (getDb().prepare('SELECT * FROM results WHERE case_id = ? ORDER BY collection_date, id').all(caseId) as Row[]).map((r) => ({
+export async function loadResults(caseId: number): Promise<ResultRow[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM results WHERE case_id = ? ORDER BY collection_date, id').all(caseId)) as Row[]).map((r) => ({
     id: num(r, 'id'),
     exam_raw: str(r, 'exam_raw'),
     exam_canonical: strOrNull(r, 'exam_canonical'),
@@ -148,8 +148,8 @@ export function loadResults(caseId: number): ResultRow[] {
   }));
 }
 
-function loadFiles(caseId: number): FileRow[] {
-  return (getDb().prepare('SELECT * FROM case_files WHERE case_id = ? ORDER BY id').all(caseId) as Row[]).map((r) => ({ id: num(r, 'id'), original_name: str(r, 'original_name'), size: num(r, 'size'), created_at: str(r, 'created_at'), mime: str(r, 'mime') || 'application/pdf' }));
+async function loadFiles(caseId: number): Promise<FileRow[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM case_files WHERE case_id = ? ORDER BY id').all(caseId)) as Row[]).map((r) => ({ id: num(r, 'id'), original_name: str(r, 'original_name'), size: num(r, 'size'), created_at: str(r, 'created_at'), mime: str(r, 'mime') || 'application/pdf' }));
 }
 
 export function profileOf(c: CaseRow): PatientProfile {
@@ -189,16 +189,16 @@ function evaluateCase(c: CaseRow, results: ResultRow[]) {
   return { rules, profile, evals, derived, derivedEvals, guidances, score };
 }
 
-function loadAnalyses(caseId: number): AnalysisRow[] {
-  return (getDb().prepare('SELECT id, created_at, table_version, ai_used, ai_model, score, finalized_at FROM analyses WHERE case_id = ? ORDER BY id DESC').all(caseId) as Row[]).map((a) => ({ id: num(a, 'id'), created_at: str(a, 'created_at'), table_version: str(a, 'table_version'), ai_used: num(a, 'ai_used') === 1, ai_model: strOrNull(a, 'ai_model'), score: numOrNull(a, 'score'), finalized_at: strOrNull(a, 'finalized_at') }));
+async function loadAnalyses(caseId: number): Promise<AnalysisRow[]> {
+  return ((await getAsyncDb().prepare('SELECT id, created_at, table_version, ai_used, ai_model, score, finalized_at FROM analyses WHERE case_id = ? ORDER BY id DESC').all(caseId)) as Row[]).map((a) => ({ id: num(a, 'id'), created_at: str(a, 'created_at'), table_version: str(a, 'table_version'), ai_used: num(a, 'ai_used') === 1, ai_model: strOrNull(a, 'ai_model'), score: numOrNull(a, 'score'), finalized_at: strOrNull(a, 'finalized_at') }));
 }
 
-function loadAnalysis(caseId: number, analysisId: number): Row | null {
-  return (getDb().prepare('SELECT * FROM analyses WHERE id = ? AND case_id = ?').get(analysisId, caseId) as Row | undefined) ?? null;
+async function loadAnalysis(caseId: number, analysisId: number): Promise<Row | null> {
+  return ((await getAsyncDb().prepare('SELECT * FROM analyses WHERE id = ? AND case_id = ?').get(analysisId, caseId)) as Row | undefined) ?? null;
 }
 
-function loadConduct(analysisId: number): ConductRow[] {
-  return (getDb().prepare('SELECT * FROM conduct_items WHERE analysis_id = ? ORDER BY position, id').all(analysisId) as Row[]).map((r) => ({ id: num(r, 'id'), kind: str(r, 'kind'), title: str(r, 'title'), rationale: str(r, 'rationale'), exams: list(str(r, 'exams')), sources: list(str(r, 'sources')), origin: str(r, 'origin'), status: str(r, 'status') }));
+async function loadConduct(analysisId: number): Promise<ConductRow[]> {
+  return ((await getAsyncDb().prepare('SELECT * FROM conduct_items WHERE analysis_id = ? ORDER BY position, id').all(analysisId)) as Row[]).map((r) => ({ id: num(r, 'id'), kind: str(r, 'kind'), title: str(r, 'title'), rationale: str(r, 'rationale'), exams: list(str(r, 'exams')), sources: list(str(r, 'sources')), origin: str(r, 'origin'), status: str(r, 'status') }));
 }
 
 function caseInfoOf(c: CaseRow, files: string[]): ReportInput['caseInfo'] {
@@ -278,7 +278,7 @@ export async function printAnalysisHtml(c: CaseRow, row: Row, tipo: 'resumido' |
   const score = scoreFromRow(row);
   let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
   if (score) {
-    const { evals, derivedEvals } = evaluateCase(c, loadResults(c.id));
+    const { evals, derivedEvals } = evaluateCase(c, await loadResults(c.id));
     top = patientVisualPanel(score, [...evals, ...derivedEvals], await previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
   }
   return layout({ title: `Análise #${num(row, 'id')} (${tipo})`, user: null, body: brandHeader() + top + renderMarkdown(markdown), print: true });
@@ -292,14 +292,14 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', async (_request, reply) => reply.redirect('/casos'));
 
   app.get('/casos', async (request, reply) => {
-    const rows = getDb()
+    const rows = (await getAsyncDb()
       .prepare(
         `SELECT c.*, (SELECT COUNT(*) FROM results r WHERE r.case_id = c.id) AS results_count,
          (SELECT COUNT(*) FROM analyses a WHERE a.case_id = c.id) AS analyses_count,
          (SELECT MAX(collection_date) FROM results r WHERE r.case_id = c.id) AS last_collection
          FROM cases c WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC LIMIT 200`,
       )
-      .all() as Row[];
+      .all()) as Row[];
     return page(request, reply, 'Casos', casesPage(rows.map(rowToCase), tableVersion(), aiEnabled()));
   });
 
@@ -308,7 +308,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const p = pid ? await loadPatient(pid) : null;
     let prefill: CaseRow | null = null;
     if (p) {
-      const last = getDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id) as Row | undefined;
+      const last = (await getAsyncDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id)) as Row | undefined;
       const base = last ? rowToCase(last) : null;
       prefill = { id: 0, patient_id: p.id, cycle_phase: '', contraceptive: base?.contraceptive ?? '', hrt: base?.hrt ?? '', patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
     }
@@ -325,18 +325,18 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!patient) {
       const code = d.patient_code || nextCode();
       const name = d.patient_name.trim() || `Paciente ${code}`;
-      const existing = getDb().prepare('SELECT * FROM patients WHERE code = ? AND deleted_at IS NULL').get(code) as Row | undefined;
+      const existing = (await getAsyncDb().prepare('SELECT * FROM patients WHERE code = ? AND deleted_at IS NULL').get(code)) as Row | undefined;
       if (existing) patient = rowToPatient(existing);
       else {
-        const pid = Number(getDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, name, d.birth_date || null, d.sex || null, d.comorbidities, d.medications, d.supplements, d.goal, request.user?.id ?? null).lastInsertRowid);
+        const pid = Number((await getAsyncDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, name, d.birth_date || null, d.sex || null, d.comorbidities, d.medications, d.supplements, d.goal, request.user?.id ?? null)).lastInsertRowid);
         patient = await loadPatient(pid);
         audit(request.user?.id ?? null, 'criar', 'patient', pid, { code, via: 'caso' }, request.id);
       }
     }
     if (!patient) return reply.code(500).send('Falha ao vincular paciente');
-    const info = getDb()
+    const info = (await getAsyncDb()
       .prepare('INSERT INTO cases(patient_id, patient_code, patient_name, menopause, cycle_phase, contraceptive, hrt, complaints, ai_notes, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(patient.id, patient.code, patient.name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || patient.sex, d.birth_date || patient.birth_date, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null);
+      .run(patient.id, patient.code, patient.name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || patient.sex, d.birth_date || patient.birth_date, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, request.user?.id ?? null));
     const id = Number(info.lastInsertRowid);
     audit(request.user?.id ?? null, 'criar', 'case', id, { patient_id: patient.id, patient_code: patient.code }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Caso criado. Etapa 2: anexe os exames (PDF ou imagem) e extraia.');
@@ -344,69 +344,69 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/casos/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
-    const results = loadResults(id);
+    const results = await loadResults(id);
     const { evals } = evaluateCase(c, results);
-    const analyses = loadAnalyses(id);
-    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: tableVersion(), examOptions: [...new Set(allRules().map((r) => r.exam_canonical))].sort() }));
+    const analyses = await loadAnalyses(id);
+    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: await loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: tableVersion(), examOptions: [...new Set(allRules().map((r) => r.exam_canonical))].sort() }));
   });
 
   app.get('/casos/:id/editar', async (request, reply) => {
-    const c = loadCase(Number((request.params as { id: string }).id));
+    const c = await loadCase(Number((request.params as { id: string }).id));
     if (!c) return reply.code(404).send('Caso não encontrado');
     return page(request, reply, 'Editar caso', caseFormPage(c, null));
   });
 
   app.post('/casos/:id/editar', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
     const parsed = CaseBody.safeParse(request.body);
     if (!parsed.success) return page(request, reply, 'Editar caso', caseFormPage(c, parsed.error.issues[0]?.message ?? 'Dados inválidos.'));
     const d = parsed.data;
-    getDb()
+    (await getAsyncDb()
       .prepare("UPDATE cases SET patient_code=?, patient_name=?, menopause=?, cycle_phase=?, contraceptive=?, hrt=?, complaints=?, ai_notes=?, sex=?, birth_date=?, contexts=?, medications=?, supplements=?, comorbidities=?, goal=?, notes=?, updated_at=datetime('now') WHERE id=?")
-      .run(d.patient_code || c.patient_code, d.patient_name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || null, d.birth_date || null, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, id);
+      .run(d.patient_code || c.patient_code, d.patient_name, d.menopause, d.cycle_phase, d.contraceptive, d.hrt, toComplaints(d.complaints).join('|'), d.ai_notes, d.sex || null, d.birth_date || null, toList(d.contexts).join('|'), d.medications, d.supplements, d.comorbidities, d.goal, d.notes, id));
     audit(request.user?.id ?? null, 'editar', 'case', id, { before: { sex: c.sex, birth_date: c.birth_date, contexts: c.contexts }, after: { sex: d.sex, birth_date: d.birth_date, contexts: toList(d.contexts) } }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Caso atualizado.');
   });
 
   app.post('/casos/:id/status', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
     const status = (request.body as { status?: string } | null)?.status;
     if (status !== 'aberto' && status !== 'revisado' && status !== 'arquivado') return redirectMsg(reply, `/casos/${id}`, 'Status inválido.', 'err');
-    getDb().prepare("UPDATE cases SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
+    (await getAsyncDb().prepare("UPDATE cases SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id));
     audit(request.user?.id ?? null, 'status', 'case', id, { before: c.status, after: status }, request.id);
     return redirectMsg(reply, `/casos/${id}`, `Caso marcado como ${status}.`);
   });
 
   app.post('/casos/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
-    const db = getDb();
-    for (const f of db.prepare('SELECT stored_name FROM case_files WHERE case_id = ?').all(id) as Row[]) {
+    const db = getAsyncDb();
+    for (const f of (await db.prepare('SELECT stored_name FROM case_files WHERE case_id = ?').all(id)) as Row[]) {
       fs.rmSync(path.join(UPLOAD_DIR, str(f, 'stored_name')), { force: true });
     }
-    db.prepare('DELETE FROM case_files WHERE case_id = ?').run(id);
-    db.prepare('DELETE FROM conduct_items WHERE case_id = ?').run(id);
-    db.prepare("UPDATE cases SET deleted_at = datetime('now'), status = 'arquivado', patient_name = NULL WHERE id = ?").run(id);
+    await db.prepare('DELETE FROM case_files WHERE case_id = ?').run(id);
+    await db.prepare('DELETE FROM conduct_items WHERE case_id = ?').run(id);
+    await db.prepare("UPDATE cases SET deleted_at = datetime('now'), status = 'arquivado', patient_name = NULL WHERE id = ?").run(id);
     audit(request.user?.id ?? null, 'excluir', 'case', id, { patient_code: c.patient_code, files_removed: true }, request.id);
     return redirectMsg(reply, '/casos', 'Caso excluído e PDFs removidos do servidor.');
   });
 
   app.post('/casos/:id/arquivos', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
     let saved = 0;
     let rejected = 0;
     for await (const part of request.files({ limits: { fileSize: MAX_PDF, files: 10 } })) {
       const buf = await part.toBuffer();
-      const fileId = part.file.truncated ? null : storeCaseFile(id, buf, part.filename);
+      const fileId = part.file.truncated ? null : await storeCaseFile(id, buf, part.filename);
       if (fileId === null) {
         rejected += 1;
         continue;
@@ -419,10 +419,10 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/arquivos/:fid/excluir', async (request, reply) => {
     const { id, fid } = request.params as { id: string; fid: string };
-    const row = getDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), Number(id)) as Row | undefined;
+    const row = (await getAsyncDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), Number(id))) as Row | undefined;
     if (!row) return reply.code(404).send('Arquivo não encontrado');
     fs.rmSync(path.join(UPLOAD_DIR, str(row, 'stored_name')), { force: true });
-    getDb().prepare('DELETE FROM case_files WHERE id = ?').run(Number(fid));
+    (await getAsyncDb().prepare('DELETE FROM case_files WHERE id = ?').run(Number(fid)));
     audit(request.user?.id ?? null, 'excluir_arquivo', 'case', Number(id), { file: str(row, 'original_name') }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Arquivo removido.');
   });
@@ -430,8 +430,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   app.post('/casos/:id/arquivos/:fid/extrair', async (request, reply) => {
     const { id, fid } = request.params as { id: string; fid: string };
     const caseId = Number(id);
-    const c = loadCase(caseId);
-    const row = getDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), caseId) as Row | undefined;
+    const c = await loadCase(caseId);
+    const row = (await getAsyncDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), caseId)) as Row | undefined;
     if (!c || !row) return reply.code(404).send('Arquivo não encontrado');
     if (!aiEnabled()) return redirectMsg(reply, `/casos/${caseId}`, 'IA desligada: configure ANTHROPIC_API_KEY.', 'err');
     const original = str(row, 'original_name');
@@ -447,7 +447,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
         }, {}),
       );
       const extraction = await extractFromFile(pdf, mime, catalog, caseId);
-      const insert = getDb().prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, lab_reference, lab_flag, collection_date, source_file, page, confidence, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ia')");
+      const insert = (await getAsyncDb().prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, lab_reference, lab_flag, collection_date, source_file, page, confidence, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ia')"));
       const known = new Set(allRules().map((r) => r.exam_canonical));
       for (const r of extraction.results) {
         const canonical = r.exam_canonical && known.has(r.exam_canonical) ? r.exam_canonical : null;
@@ -466,29 +466,29 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/resultados', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    if (!loadCase(id)) return reply.code(404).send('Caso não encontrado');
+    if (!await loadCase(id)) return reply.code(404).send('Caso não encontrado');
     const parsed = ResultBody.safeParse(request.body);
     if (!parsed.success) return redirectMsg(reply, `/casos/${id}`, `Resultado inválido: ${parsed.error.issues[0]?.message ?? ''}`, 'err');
     const d = parsed.data;
-    getDb()
+    (await getAsyncDb()
       .prepare("INSERT INTO results(case_id, exam_raw, exam_canonical, value_raw, unit_raw, lab_reference, lab_flag, collection_date, source_file, page, confidence, origin) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'manual')")
-      .run(id, d.exam_raw, d.value_raw, d.unit_raw || null, d.lab_reference || null, d.lab_flag || null, d.collection_date || null, d.source_file || null, d.page ? Number(d.page) : null, d.confidence);
+      .run(id, d.exam_raw, d.value_raw, d.unit_raw || null, d.lab_reference || null, d.lab_flag || null, d.collection_date || null, d.source_file || null, d.page ? Number(d.page) : null, d.confidence));
     audit(request.user?.id ?? null, 'lancar_resultado', 'case', id, { exam: d.exam_raw }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Resultado lançado.');
   });
 
   app.get('/casos/:id/conferencia', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
-    const results = loadResults(id);
+    const results = await loadResults(id);
     const all = evaluateAll(toInputs(results), allRules(), profileOf(c));
     return page(request, reply, 'Conferência', conferencePage(c, results, all, [...new Set(allRules().map((r) => r.exam_canonical))].sort()));
   });
 
   app.post('/casos/:id/conferencia', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
     const body = (request.body ?? {}) as Record<string, string | string[]>;
     const one = (k: string) => {
@@ -497,9 +497,9 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     };
     const okAll = one('action') === 'ok_todos';
     const known = new Set(allRules().map((r) => r.exam_canonical));
-    const update = getDb().prepare('UPDATE results SET exam_raw = ?, exam_canonical = ?, value_raw = ?, unit_raw = ?, lab_reference = ?, lab_flag = ?, collection_date = ?, excluded = ?, checked = ? WHERE id = ? AND case_id = ?');
+    const update = (await getAsyncDb().prepare('UPDATE results SET exam_raw = ?, exam_canonical = ?, value_raw = ?, unit_raw = ?, lab_reference = ?, lab_flag = ?, collection_date = ?, excluded = ?, checked = ? WHERE id = ? AND case_id = ?'));
     let changed = 0;
-    for (const r of loadResults(id)) {
+    for (const r of await loadResults(id)) {
       const k = (f: string) => one(`${f}_${r.id}`).trim();
       if (!(`exam_raw_${r.id}` in body)) continue;
       const examRaw = k('exam_raw').slice(0, 120) || r.exam_raw;
@@ -514,36 +514,36 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       update.run(examRaw, canonical, value, unit, ref, flag, date, include ? 0 : 1, checked ? 1 : 0, r.id, id);
       changed += 1;
     }
-    getDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(id);
+    (await getAsyncDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(id));
     audit(request.user?.id ?? null, okAll ? 'conferir_todos' : 'conferir', 'case', id, { rows: changed }, request.id);
     return redirectMsg(reply, `/casos/${id}/conferencia`, okAll ? 'Todos os resultados incluídos foram marcados como conferidos.' : 'Alterações salvas.');
   });
 
   app.post('/casos/:id/resultados/:rid/vincular', async (request, reply) => {
     const { id, rid } = request.params as { id: string; rid: string };
-    if (!loadCase(Number(id))) return reply.code(404).send('Caso não encontrado');
+    if (!await loadCase(Number(id))) return reply.code(404).send('Caso não encontrado');
     const chosen = ((request.body as { exam_canonical?: string } | null)?.exam_canonical ?? '').trim();
     const known = new Set(allRules().map((r) => r.exam_canonical));
     if (chosen && !known.has(chosen)) return redirectMsg(reply, `/casos/${id}`, 'Exame inexistente na tabela.', 'err');
-    const before = getDb().prepare('SELECT exam_canonical FROM results WHERE id = ? AND case_id = ?').get(Number(rid), Number(id)) as Row | undefined;
+    const before = (await getAsyncDb().prepare('SELECT exam_canonical FROM results WHERE id = ? AND case_id = ?').get(Number(rid), Number(id))) as Row | undefined;
     if (!before) return reply.code(404).send('Resultado não encontrado');
-    getDb().prepare('UPDATE results SET exam_canonical = ? WHERE id = ? AND case_id = ?').run(chosen || null, Number(rid), Number(id));
+    (await getAsyncDb().prepare('UPDATE results SET exam_canonical = ? WHERE id = ? AND case_id = ?').run(chosen || null, Number(rid), Number(id)));
     audit(request.user?.id ?? null, 'vincular_resultado', 'case', Number(id), { result_id: Number(rid), before: strOrNull(before, 'exam_canonical'), after: chosen || null }, request.id);
     return redirectMsg(reply, `/casos/${id}`, chosen ? `Resultado vinculado a ${chosen}.` : 'Vínculo removido.');
   });
 
   app.post('/casos/:id/resultados/:rid/excluir', async (request, reply) => {
     const { id, rid } = request.params as { id: string; rid: string };
-    const info = getDb().prepare('DELETE FROM results WHERE id = ? AND case_id = ?').run(Number(rid), Number(id));
+    const info = (await getAsyncDb().prepare('DELETE FROM results WHERE id = ? AND case_id = ?').run(Number(rid), Number(id)));
     audit(request.user?.id ?? null, 'excluir_resultado', 'case', Number(id), { result_id: Number(rid), changes: Number(info.changes) }, request.id);
     return redirectMsg(reply, `/casos/${id}`, 'Resultado removido.');
   });
 
   app.post('/casos/:id/analisar', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
-    const results = loadResults(id).filter((r) => !r.excluded);
+    const results = (await loadResults(id)).filter((r) => !r.excluded);
     if (!results.length) return redirectMsg(reply, `/casos/${id}`, 'Lance ou extraia ao menos um resultado antes de gerar o relatório.', 'err');
     if (results.some((r) => !r.checked)) return redirectMsg(reply, `/casos/${id}/conferencia`, 'Confira todos os resultados incluídos antes de gerar o relatório (botão "OK em todos").', 'warn');
     const wantNarrative = (request.body as { narrative?: string } | null)?.narrative === '1' && aiEnabled();
@@ -559,11 +559,11 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       }
     }
     const version = tableVersion();
-    const input: ReportInput = { caseInfo: caseInfoOf(c, loadFiles(id).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: version, narrative, aiModel: narrative ? AI_MODEL : null, generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), settings: reportSettings() };
+    const input: ReportInput = { caseInfo: caseInfoOf(c, (await loadFiles(id)).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: version, narrative, aiModel: narrative ? AI_MODEL : null, generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), settings: reportSettings() };
     const technical = buildTechnicalReport(input);
     const patient = buildPatientReport(input);
-    const info = getDb().prepare('INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used, ai_model, score, score_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, technical, patient, technical, version, narrative ? 1 : 0, narrative ? AI_MODEL : null, score.total, JSON.stringify(score), request.user?.id ?? null);
-    getDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(id);
+    const info = (await getAsyncDb().prepare('INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used, ai_model, score, score_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(id, technical, patient, technical, version, narrative ? 1 : 0, narrative ? AI_MODEL : null, score.total, JSON.stringify(score), request.user?.id ?? null));
+    (await getAsyncDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(id));
     const analysisId = Number(info.lastInsertRowid);
     audit(request.user?.id ?? null, 'gerar_analise', 'analysis', analysisId, { case_id: id, results: results.length, ai: !!narrative, score: score.total, table_version: version, guidances: guidances.map((g) => g.guidance.code) }, request.id);
     return redirectMsg(reply, `/casos/${id}/analises/${analysisId}`, `Relatórios gerados. Score ${score.total ?? 'não calculado'}.${warning}`, warning ? 'warn' : 'ok');
@@ -571,11 +571,11 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/casos/:id/analises/:aid', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
-    const { evals, profile, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
-    const analysis = loadAnalyses(Number(id)).find((a) => a.id === Number(aid));
+    const { evals, profile, derivedEvals } = evaluateCase(c, await loadResults(Number(id)));
+    const analysis = (await loadAnalyses(Number(id))).find((a) => a.id === Number(aid));
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
@@ -586,25 +586,25 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       technicalHtml: panel + renderMarkdown(str(row, 'markdown_technical') || str(row, 'markdown')),
       finalPatientHtml: strOrNull(row, 'final_patient') ? panel + renderMarkdown(str(row, 'final_patient')) : null,
       finalTechnicalHtml: strOrNull(row, 'final_technical') ? panel + renderMarkdown(str(row, 'final_technical')) : null,
-      conductCount: loadConduct(Number(aid)).length, criticalQuery: criticalQuery(evals, profile), aiOn: aiEnabled(),
+      conductCount: (await loadConduct(Number(aid))).length, criticalQuery: criticalQuery(evals, profile), aiOn: aiEnabled(),
     }), q.msg ? { kind: (q.kind === 'err' || q.kind === 'warn' ? q.kind : 'ok') as 'ok' | 'err' | 'warn', text: q.msg } : null);
   });
 
   /* ------------------------------------------------------------ conduta */
   const conductView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
-    const analysis = loadAnalyses(Number(id)).find((a) => a.id === Number(aid));
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
+    const analysis = (await loadAnalyses(Number(id))).find((a) => a.id === Number(aid));
     if (!c || !row || !analysis) return reply.code(404).send('Análise não encontrada');
-    const { evals, profile } = evaluateCase(c, loadResults(Number(id)));
-    const searchNote = getSettingLocal(`conduct.search.${aid}`);
+    const { evals, profile } = evaluateCase(c, await loadResults(Number(id)));
+    const searchNote = await getSettingLocal(`conduct.search.${aid}`);
     const hits = new Set(evals.filter((e) => e.exam_canonical).flatMap((e) => [`${e.exam_canonical}:${e.classification}`, ...(e.critical ? [`${e.exam_canonical}:critico`] : [])]));
     const templates = allTemplates().filter((t) => t.status === 'ativo').map((t) => ({ id: t.id, name: t.name, profile: t.profile, items: t.items.length, matches: t.triggers.length > 0 && t.triggers.every((x) => hits.has(x)) }));
-    return page(request, reply, 'Conduta', conductPage({ c, analysis, items: loadConduct(Number(aid)), doctorNotes: c.doctor_notes, aiOn: aiEnabled(), criticalQuery: criticalQuery(evals, profile), error, searchNote, templates }));
+    return page(request, reply, 'Conduta', conductPage({ c, analysis, items: await loadConduct(Number(aid)), doctorNotes: c.doctor_notes, aiOn: aiEnabled(), criticalQuery: criticalQuery(evals, profile), error, searchNote, templates }));
   };
-  const getSettingLocal = (key: string): string | null => {
-    const r = getDb().prepare('SELECT value FROM settings WHERE key = ?').get(key) as Row | undefined;
+  const getSettingLocal = async (key: string): Promise<string | null> => {
+    const r = (await getAsyncDb().prepare('SELECT value FROM settings WHERE key = ?').get(key)) as Row | undefined;
     return r ? str(r, 'value') : null;
   };
 
@@ -612,23 +612,23 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/analises/:aid/conduta/sugerir', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     if (strOrNull(row, 'finalized_at')) return conductView(request, reply, 'Relatório já finalizado; reabra para alterar a conduta.');
     if (!aiEnabled()) return conductView(request, reply, 'IA desligada.');
-    const { evals, profile, derived, guidances, score } = evaluateCase(c, loadResults(Number(id)));
+    const { evals, profile, derived, guidances, score } = evaluateCase(c, await loadResults(Number(id)));
     try {
       const library = allGuidances().filter((g) => g.status === 'ativo').map((g) => ({ codigo: g.code, titulo: g.title, exame: g.exam_canonical, gatilho: g.trigger, texto: g.patient_text }));
       const templates = allTemplates().filter((t) => t.status === 'ativo').map((t) => ({ nome: t.name, perfil: t.profile, gatilhos: t.triggers, itens: t.items }));
       const { conduct, searches } = await suggestConduct({ ...reportPayload(c, profile, evals, derived, guidances, score), biblioteca_do_medico: library, modelos_de_conduta_do_medico: templates }, Number(id));
-      const insert = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, sources, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, 'ia', 'sugerida', ?)");
-      let pos = loadConduct(Number(aid)).length;
+      const insert = (await getAsyncDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, sources, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, ?, 'ia', 'sugerida', ?)"));
+      let pos = (await loadConduct(Number(aid))).length;
       for (const item of conduct.itens) {
         insert.run(Number(id), Number(aid), item.tipo, item.titulo.slice(0, 200), item.justificativa.slice(0, 3000), item.exames.join('|'), item.fontes.join('|'), pos);
         pos += 1;
       }
-      getDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`conduct.search.${aid}`, conduct.pesquisa_openevidence.slice(0, 4000));
+      (await getAsyncDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`conduct.search.${aid}`, conduct.pesquisa_openevidence.slice(0, 4000)));
       audit(request.user?.id ?? null, 'sugerir_conduta_ia', 'analysis', Number(aid), { items: conduct.itens.length, searches }, request.id);
       return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`${conduct.itens.length} sugestão(ões) geradas com ${searches} consulta(s) à literatura. Revise cada uma e use o botão do OpenEvidence para aprofundar.`)}`);
     } catch (error) {
@@ -639,15 +639,15 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/analises/:aid/conduta/modelo', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     if (strOrNull(row, 'finalized_at')) return conductView(request, reply, 'Relatório já finalizado.');
     const tid = Number((request.body as { template_id?: string } | null)?.template_id ?? 0);
     const t = allTemplates().find((x) => x.id === tid && x.status === 'ativo');
     if (!t) return conductView(request, reply, 'Modelo não encontrado.');
-    const insert = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, ?, ?, ?, 'biblioteca', 'sugerida', ?)");
-    let pos = loadConduct(Number(aid)).length;
+    const insert = (await getAsyncDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, ?, ?, ?, 'biblioteca', 'sugerida', ?)"));
+    let pos = (await loadConduct(Number(aid))).length;
     for (const it of t.items) {
       insert.run(Number(id), Number(aid), it.kind in CONDUCT_KIND_LABEL ? it.kind : 'outro', it.title.slice(0, 200), `${it.rationale} (modelo: ${t.name})`.slice(0, 3000), pos);
       pos += 1;
@@ -658,50 +658,50 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/analises/:aid/conduta/salvar-modelo', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    if (!c || !loadAnalysis(Number(id), Number(aid))) return reply.code(404).send('Análise não encontrada');
-    const approved = loadConduct(Number(aid)).filter((i) => i.status === 'aprovada');
+    const c = await loadCase(Number(id));
+    if (!c || !await loadAnalysis(Number(id), Number(aid))) return reply.code(404).send('Análise não encontrada');
+    const approved = (await loadConduct(Number(aid))).filter((i) => i.status === 'aprovada');
     if (!approved.length) return conductView(request, reply, 'Aprove ao menos um item antes de salvar como modelo.');
-    const { evals } = evaluateCase(c, loadResults(Number(id)));
+    const { evals } = evaluateCase(c, await loadResults(Number(id)));
     const triggers = evals.filter((e) => e.exam_canonical && ['abaixo_do_alvo', 'acima_do_alvo'].includes(e.classification)).map((e) => `${e.exam_canonical}:${e.classification}`).slice(0, 6);
     const items = approved.map((i) => ({ kind: i.kind, title: i.title, rationale: i.rationale.split('\n')[0] ?? '' }));
     const name = `Modelo do caso #${id} (${new Date().toISOString().slice(0, 10)})`;
-    const tid = Number(getDb().prepare("INSERT INTO conduct_templates(name, profile, triggers, items, status, created_by) VALUES (?, ?, ?, ?, 'inativo', ?)").run(name, '', triggers.join('|'), JSON.stringify(items), request.user?.id ?? null).lastInsertRowid);
+    const tid = Number((await getAsyncDb().prepare("INSERT INTO conduct_templates(name, profile, triggers, items, status, created_by) VALUES (?, ?, ?, ?, 'inativo', ?)").run(name, '', triggers.join('|'), JSON.stringify(items), request.user?.id ?? null)).lastInsertRowid);
     audit(request.user?.id ?? null, 'criar', 'conduct_template', tid, { from_analysis: Number(aid), items: items.length }, request.id);
     return reply.redirect(`/modelos/${tid}?kind=ok&msg=${encodeURIComponent('Modelo criado a partir da conduta aprovada. Dê um nome, descreva o perfil, revise os gatilhos e ative.')}`);
   });
 
   app.post('/casos/:id/analises/:aid/conduta/novo', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     const parsed = ConductItemBody.safeParse(request.body);
     if (!parsed.success) return conductView(request, reply, 'Preencha o título.');
     const d = parsed.data;
     const kind = d.kind in CONDUCT_KIND_LABEL ? d.kind : 'outro';
-    getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, ?, ?, ?, 'medico', 'aprovada', ?)").run(Number(id), Number(aid), kind, d.title, d.rationale, loadConduct(Number(aid)).length);
+    (await getAsyncDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, origin, status, position) VALUES (?, ?, ?, ?, ?, 'medico', 'aprovada', ?)").run(Number(id), Number(aid), kind, d.title, d.rationale, (await loadConduct(Number(aid))).length));
     audit(request.user?.id ?? null, 'conduta_manual', 'analysis', Number(aid), { title: d.title }, request.id);
     return reply.redirect(`/casos/${id}/analises/${aid}/conduta`);
   });
 
   app.post('/casos/:id/analises/:aid/conduta/:cid', async (request, reply) => {
     const { id, aid, cid } = request.params as { id: string; aid: string; cid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     if (strOrNull(row, 'finalized_at')) return conductView(request, reply, 'Relatório já finalizado; reabra para alterar.');
     const parsed = ConductItemBody.safeParse(request.body);
     if (!parsed.success) return conductView(request, reply, 'Título obrigatório.');
     const d = parsed.data;
-    const item = getDb().prepare('SELECT * FROM conduct_items WHERE id = ? AND analysis_id = ?').get(Number(cid), Number(aid)) as Row | undefined;
+    const item = (await getAsyncDb().prepare('SELECT * FROM conduct_items WHERE id = ? AND analysis_id = ?').get(Number(cid), Number(aid))) as Row | undefined;
     if (!item) return reply.code(404).send('Item não encontrado');
     if (d.action === 'excluir') {
-      getDb().prepare('DELETE FROM conduct_items WHERE id = ?').run(Number(cid));
+      (await getAsyncDb().prepare('DELETE FROM conduct_items WHERE id = ?').run(Number(cid)));
     } else {
       const status = d.action === 'aprovar' ? 'aprovada' : d.action === 'rejeitar' ? 'rejeitada' : str(item, 'status');
       const kind = d.kind in CONDUCT_KIND_LABEL ? d.kind : str(item, 'kind');
-      getDb().prepare("UPDATE conduct_items SET kind = ?, title = ?, rationale = ?, status = ?, updated_at = datetime('now') WHERE id = ?").run(kind, d.title, d.rationale, status, Number(cid));
+      (await getAsyncDb().prepare("UPDATE conduct_items SET kind = ?, title = ?, rationale = ?, status = ?, updated_at = datetime('now') WHERE id = ?").run(kind, d.title, d.rationale, status, Number(cid)));
     }
     audit(request.user?.id ?? null, `conduta_${d.action}`, 'conduct', Number(cid), { analysis_id: Number(aid), title: d.title }, request.id);
     return reply.redirect(`/casos/${id}/analises/${aid}/conduta`);
@@ -710,43 +710,44 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   /* ----------------------------------------------------------- fórmulas */
   const formulasView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
-    const analysis = loadAnalyses(Number(id)).find((a) => a.id === Number(aid));
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
+    const analysis = (await loadAnalyses(Number(id))).find((a) => a.id === Number(aid));
     if (!c || !row || !analysis) return reply.code(404).send('Análise não encontrada');
     const formulas = allFormulas().filter((f) => f.status === 'ativo');
     const byId = new Map(formulas.map((f) => [f.id, f]));
-    const raw = getSettingLocal(`formulas.sug.${aid}`);
+    const raw = await getSettingLocal(`formulas.sug.${aid}`);
     const stored = raw ? (JSON.parse(raw) as { items: Array<{ formula_id: number; justificativa: string; ajuste: string; conduct_id: number | null }>; note: string }) : { items: [], note: '' };
-    const conduct = loadConduct(Number(aid));
+    const conduct = await loadConduct(Number(aid));
     const suggestions = stored.items.map((it) => ({ formula: byId.get(it.formula_id) ?? allFormulas().find((f) => f.id === it.formula_id) ?? ({ id: it.formula_id, name: 'item removido do banco', kind: 'manipulada', composition: '', posology: '', indications: '', exams: [], contraindications: '', notes: '', status: 'inativo' } as Formula), justificativa: it.justificativa, ajuste: it.ajuste, conductId: it.conduct_id, status: conduct.find((ci) => ci.id === it.conduct_id)?.status ?? null }));
     return page(request, reply, 'Fórmulas', caseFormulasPage({ c, analysis, formulas, suggestions, note: stored.note || null, aiOn: aiEnabled(), error }));
   };
   app.get('/casos/:id/analises/:aid/formulas', async (request, reply) => formulasView(request, reply));
 
-  const addFormulaToConduct = (caseId: number, analysisId: number, f: Formula, justificativa: string, ajuste: string, status: 'sugerida' | 'aprovada'): number => {
+  const addFormulaToConduct = async (caseId: number, analysisId: number, f: Formula, justificativa: string, ajuste: string, status: 'sugerida' | 'aprovada'): Promise<number> => {
     const rationale = `${justificativa}\n\nComposição: ${f.composition}\nPosologia: ${f.posology}${ajuste ? `\nAjuste sugerido: ${ajuste}` : ''}${f.contraindications ? `\nContraindicações/monitorização: ${f.contraindications}` : ''}`;
-    const info = getDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, 'biblioteca', ?, ?)").run(caseId, analysisId, f.kind === 'suplemento' ? 'suplementacao' : 'medicamentoso', f.name, rationale, f.exams.join('|'), status, loadConduct(analysisId).length);
+    const info = (await getAsyncDb().prepare("INSERT INTO conduct_items(case_id, analysis_id, kind, title, rationale, exams, origin, status, position) VALUES (?, ?, ?, ?, ?, ?, 'biblioteca', ?, ?)").run(caseId, analysisId, f.kind === 'suplemento' ? 'suplementacao' : 'medicamentoso', f.name, rationale, f.exams.join('|'), status, (await loadConduct(analysisId)).length));
     return Number(info.lastInsertRowid);
   };
 
   app.post('/casos/:id/analises/:aid/formulas/sugerir', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     if (strOrNull(row, 'finalized_at')) return formulasView(request, reply, 'Relatório já finalizado; reabra na conduta para alterar.');
     if (!aiEnabled()) return formulasView(request, reply, 'IA desligada.');
     const bank = allFormulas().filter((f) => f.status === 'ativo');
     if (!bank.length) return formulasView(request, reply, 'Seu banco não tem itens ativos; cadastre e ative em Fórmulas e medicamentos.');
-    const { evals, profile, derived, guidances, score } = evaluateCase(c, loadResults(Number(id)));
+    const { evals, profile, derived, guidances, score } = evaluateCase(c, await loadResults(Number(id)));
     try {
       const res = await suggestFormulas({ ...reportPayload(c, profile, evals, derived, guidances, score), banco: bank.map((f) => ({ formula_id: f.id, nome: f.name, tipo: f.kind, composicao: f.composition, posologia: f.posology, indicacoes: f.indications, exames: f.exams, contraindicacoes: f.contraindications })) }, Number(id));
-      const items = res.sugestoes.filter((sg) => bank.some((f) => f.id === sg.formula_id)).map((sg) => {
+      const items: Array<{ formula_id: number; justificativa: string; ajuste: string; conduct_id: number }> = [];
+      for (const sg of res.sugestoes.filter((x) => bank.some((f) => f.id === x.formula_id))) {
         const f = bank.find((x) => x.id === sg.formula_id) as Formula;
-        return { formula_id: sg.formula_id, justificativa: sg.justificativa, ajuste: sg.ajuste, conduct_id: addFormulaToConduct(Number(id), Number(aid), f, sg.justificativa, sg.ajuste, 'sugerida') };
-      });
-      getDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`formulas.sug.${aid}`, JSON.stringify({ items, note: res.observacao.slice(0, 2000) }));
+        items.push({ formula_id: sg.formula_id, justificativa: sg.justificativa, ajuste: sg.ajuste, conduct_id: await addFormulaToConduct(Number(id), Number(aid), f, sg.justificativa, sg.ajuste, 'sugerida') });
+      }
+      (await getAsyncDb().prepare('INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(`formulas.sug.${aid}`, JSON.stringify({ items, note: res.observacao.slice(0, 2000) })));
       audit(request.user?.id ?? null, 'sugerir_formulas_ia', 'analysis', Number(aid), { items: items.length }, request.id);
       return reply.redirect(`/casos/${id}/analises/${aid}/formulas?kind=ok&msg=${encodeURIComponent(`${items.length} sugestão(ões) do seu banco. Aprove ou rejeite cada uma.`)}`);
     } catch (error) {
@@ -757,41 +758,41 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/casos/:id/analises/:aid/formulas/:fid/adicionar', async (request, reply) => {
     const { id, aid, fid } = request.params as { id: string; aid: string; fid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     if (strOrNull(row, 'finalized_at')) return formulasView(request, reply, 'Relatório já finalizado.');
     const f = allFormulas().find((x) => x.id === Number(fid) && x.status === 'ativo');
     if (!f) return formulasView(request, reply, 'Item não encontrado ou inativo.');
-    const cid = addFormulaToConduct(Number(id), Number(aid), f, 'Adicionado manualmente pelo médico.', '', 'aprovada');
+    const cid = await addFormulaToConduct(Number(id), Number(aid), f, 'Adicionado manualmente pelo médico.', '', 'aprovada');
     audit(request.user?.id ?? null, 'formula_adicionada', 'conduct', cid, { formula_id: f.id }, request.id);
     return reply.redirect(`/casos/${id}/analises/${aid}/conduta?kind=ok&msg=${encodeURIComponent(`${f.name} adicionado à conduta (aprovado).`)}`);
   });
 
   app.post('/casos/:id/analises/:aid/finalizar', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!c || !row) return reply.code(404).send('Análise não encontrada');
     const body = (request.body ?? {}) as { action?: string; doctor_notes?: string };
     if (body.action === 'reabrir') {
-      getDb().prepare('UPDATE analyses SET final_patient = NULL, final_technical = NULL, finalized_at = NULL WHERE id = ?').run(Number(aid));
+      (await getAsyncDb().prepare('UPDATE analyses SET final_patient = NULL, final_technical = NULL, finalized_at = NULL WHERE id = ?').run(Number(aid)));
       audit(request.user?.id ?? null, 'reabrir_analise', 'analysis', Number(aid), null, request.id);
       return reply.redirect(`/casos/${id}/analises/${aid}/conduta`);
     }
     const notes = (body.doctor_notes ?? '').trim().slice(0, 5000);
-    getDb().prepare("UPDATE cases SET doctor_notes = ?, updated_at = datetime('now') WHERE id = ?").run(notes, Number(id));
-    const approved: ConductItem[] = loadConduct(Number(aid)).filter((i) => i.status === 'aprovada').map((i) => ({ kind: i.kind, title: i.title, rationale: i.rationale, exams: i.exams, sources: i.sources, origin: i.origin }));
-    const results = loadResults(Number(id)).filter((r) => !r.excluded);
+    (await getAsyncDb().prepare("UPDATE cases SET doctor_notes = ?, updated_at = datetime('now') WHERE id = ?").run(notes, Number(id)));
+    const approved: ConductItem[] = (await loadConduct(Number(aid))).filter((i) => i.status === 'aprovada').map((i) => ({ kind: i.kind, title: i.title, rationale: i.rationale, exams: i.exams, sources: i.sources, origin: i.origin }));
+    const results = (await loadResults(Number(id))).filter((r) => !r.excluded);
     const { profile, evals, derived, derivedEvals, guidances, score } = evaluateCase(c, results);
     const narrativeRaw = strOrNull(row, 'markdown_patient');
     void narrativeRaw;
-    const input: ReportInput = { caseInfo: caseInfoOf({ ...c, doctor_notes: notes }, loadFiles(Number(id)).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: str(row, 'table_version'), narrative: null, aiModel: strOrNull(row, 'ai_model'), generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), conduct: approved, doctorNotes: notes, authorName: request.user?.name ?? 'médico responsável', settings: reportSettings() };
+    const input: ReportInput = { caseInfo: caseInfoOf({ ...c, doctor_notes: notes }, (await loadFiles(Number(id))).map((f) => f.original_name)), profile, evals, derived, derivedEvals, guidances, score, tableVersion: str(row, 'table_version'), narrative: null, aiModel: strOrNull(row, 'ai_model'), generatedAt: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }), conduct: approved, doctorNotes: notes, authorName: request.user?.name ?? 'médico responsável', settings: reportSettings() };
     // Mantém a redação já gerada: reaproveita as seções narrativas do markdown anterior quando existirem.
     const finalPatient = mergeNarrative(str(row, 'markdown_patient'), buildPatientReport(input));
     const finalTechnical = mergeNarrative(str(row, 'markdown_technical'), buildTechnicalReport(input));
-    getDb().prepare("UPDATE analyses SET final_patient = ?, final_technical = ?, finalized_at = datetime('now') WHERE id = ?").run(finalPatient, finalTechnical, Number(aid));
-    getDb().prepare("UPDATE cases SET status = 'revisado', updated_at = datetime('now') WHERE id = ?").run(Number(id));
+    (await getAsyncDb().prepare("UPDATE analyses SET final_patient = ?, final_technical = ?, finalized_at = datetime('now') WHERE id = ?").run(finalPatient, finalTechnical, Number(aid)));
+    (await getAsyncDb().prepare("UPDATE cases SET status = 'revisado', updated_at = datetime('now') WHERE id = ?").run(Number(id)));
     audit(request.user?.id ?? null, 'finalizar_analise', 'analysis', Number(aid), { approved: approved.length, notes: !!notes }, request.id);
     return reply.redirect(`/casos/${id}/analises/${aid}?kind=ok&msg=${encodeURIComponent('Relatório final gerado com a conduta aprovada. Imprima ou salve em PDF.')}`);
   });
@@ -799,8 +800,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   app.get('/casos/:id/analises/:aid/imprimir', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
     const tipo = (request.query as { tipo?: string }).tipo === 'tecnico' ? 'tecnico' : 'resumido';
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!row || !c) return reply.code(404).send('Análise não encontrada');
     audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), { tipo }, request.id);
     return reply.type('text/html; charset=utf-8').send(await printAnalysisHtml(c, row, tipo, pickMarkdown(row, tipo)));
@@ -809,10 +810,10 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   app.get('/casos/:id/analises/:aid/download', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
     const tipo = (request.query as { tipo?: string }).tipo === 'tecnico' ? 'tecnico' : 'resumido';
-    const c = loadCase(Number(id));
-    const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
+    const c = await loadCase(Number(id));
+    const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
     if (!row || !c) return reply.code(404).send('Análise não encontrada');
-    const last = getDb().prepare('SELECT MAX(collection_date) AS d FROM results WHERE case_id = ?').get(Number(id)) as Row;
+    const last = (await getAsyncDb().prepare('SELECT MAX(collection_date) AS d FROM results WHERE case_id = ?').get(Number(id))) as Row;
     const date = strOrNull(last, 'd') ?? str(row, 'created_at').slice(0, 10);
     const name = `analise-exames_${c.patient_code.replace(/[^\w.-]+/g, '-')}_${date}_${tipo}.md`;
     audit(request.user?.id ?? null, 'baixar_analise', 'analysis', Number(aid), { file: name }, request.id);
@@ -821,15 +822,15 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/casos/:id/previa', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
-    const c = loadCase(id);
+    const c = await loadCase(id);
     if (!c) return reply.code(404).send('Caso não encontrado');
-    const { evals } = evaluateCase(c, loadResults(id));
+    const { evals } = evaluateCase(c, await loadResults(id));
     return reply.send({ data: evals.map((e) => ({ exam: e.exam_canonical, classification: e.classification, notes: e.notes })), meta: { requestId: request.id } });
   });
 
   app.get('/casos/:id/arquivos/:fid', async (request, reply) => {
     const { id, fid } = request.params as { id: string; fid: string };
-    const row = getDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), Number(id)) as Row | undefined;
+    const row = (await getAsyncDb().prepare('SELECT * FROM case_files WHERE id = ? AND case_id = ?').get(Number(fid), Number(id))) as Row | undefined;
     if (!row) return reply.code(404).send('Arquivo não encontrado');
     audit(request.user?.id ?? null, 'ver_arquivo', 'case', Number(id), { file: str(row, 'original_name') }, request.id);
     return reply.type(str(row, 'mime') || 'application/pdf').header('Content-Disposition', `inline; filename="${h(str(row, 'original_name'))}"`).send(fs.createReadStream(path.join(UPLOAD_DIR, str(row, 'stored_name'))));
