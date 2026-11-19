@@ -12,7 +12,7 @@ import { TxState } from './txstate.js';
 pg.types.setTypeParser(20, (v: string) => Number(v));
 pg.types.setTypeParser(1700, (v: string) => Number(v));
 
-const { url, sab, port } = workerData as { url: string; sab: SharedArrayBuffer; port: MessagePort };
+const { url, sab, port, asyncPort } = workerData as { url: string; sab: SharedArrayBuffer; port: MessagePort; asyncPort: MessagePort };
 const flag = new Int32Array(sab);
 let client: pg.Client | null = null;
 const tx = new TxState();
@@ -30,24 +30,24 @@ async function connection(): Promise<pg.Client> {
   return c;
 }
 
-function reply(message: unknown): void {
+function replySync(message: unknown): void {
   port.postMessage(message);
   Atomics.store(flag, 0, 1);
   Atomics.notify(flag, 0);
 }
 
-port.on('message', async (msg: { text: string; params: unknown[]; mode: 'query' | 'exec' }) => {
+type Msg = { id?: number; text: string; params: unknown[]; mode: 'query' | 'exec' };
+type Reply = { ok: true; rows: unknown[]; rowCount: number } | { ok: false; message: string; code: string | null };
+
+async function run(msg: Msg): Promise<Reply> {
   const verdict = tx.before(msg.text);
-  if (!verdict.run) {
-    reply(verdict.reply === 'ok' ? { ok: true, rows: [], rowCount: 0 } : { ok: false, message: verdict.message, code: 'NUTROLAB_TX_LOST' });
-    return;
-  }
+  if (!verdict.run) return verdict.reply === 'ok' ? { ok: true, rows: [], rowCount: 0 } : { ok: false, message: verdict.message, code: 'NUTROLAB_TX_LOST' };
   try {
     const c = await connection();
     const res = msg.mode === 'exec' ? await c.query(msg.text) : await c.query(msg.text, msg.params);
     const last = Array.isArray(res) ? res[res.length - 1] : res;
     tx.after(msg.text);
-    reply({ ok: true, rows: last?.rows ?? [], rowCount: last?.rowCount ?? 0 });
+    return { ok: true, rows: last?.rows ?? [], rowCount: last?.rowCount ?? 0 };
   } catch (error) {
     const e = error as { message?: string; code?: string };
     // Erro de conexão (não de SQL): descarta o cliente e, se em transação, marca como perdida.
@@ -56,7 +56,20 @@ port.on('message', async (msg: { text: string; params: unknown[]; mode: 'query' 
       client = null;
       tx.connectionLost();
     }
-    reply({ ok: false, message: e.message ?? String(error), code: e.code ?? null });
+    return { ok: false, message: e.message ?? String(error), code: e.code ?? null };
   }
-});
+}
+
+// Fila única para os dois canais: uma consulta por vez, na ordem de chegada
+// (a conexão é uma só; BEGIN/COMMIT e a ordem ficam iguais às do SQLite).
+let queue: Promise<unknown> = Promise.resolve();
+function enqueue(job: () => Promise<void>): void {
+  queue = queue.then(job, job);
+}
+
+port.on('message', (msg: Msg) => enqueue(async () => replySync(await run(msg))));
+asyncPort.on('message', (msg: Msg) => enqueue(async () => {
+  const r = await run(msg);
+  asyncPort.postMessage({ id: msg.id, ...r });
+}));
 parentPort?.postMessage('ready');

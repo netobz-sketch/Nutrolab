@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
-import { PgSyncDb, type Db } from './pg/sync.js';
+import { asyncOf, PgSyncDb, type AsyncDb, type Db } from './pg/sync.js';
 import { ensurePgSchema } from './pg/schema.js';
 
-export type { Db } from './pg/sync.js';
+export type { AsyncDb, Db } from './pg/sync.js';
 
 /** Postgres quando DATABASE_URL existir; senão SQLite (padrão). */
 export function usingPostgres(): boolean {
@@ -304,11 +304,18 @@ function migrate(database: DatabaseSync): void {
 }
 
 let db: Db | null = null;
+let adb: AsyncDb | null = null;
 let testResetDone = false;
 
 export function getDb(): Db {
   if (!db) throw new Error('banco não inicializado');
   return db;
+}
+
+/** API assíncrona do mesmo banco (refactor gradual: módulo a módulo deixa a ponte síncrona). */
+export function getAsyncDb(): AsyncDb {
+  if (!adb) throw new Error('banco não inicializado');
+  return adb;
 }
 
 export function openDb(): Db {
@@ -327,6 +334,7 @@ export function openDb(): Db {
     }
     ensurePgSchema(pgdb, schemaReference());
     db = pgdb;
+    adb = pgdb.async;
   } else {
     const sqlite = new DatabaseSync(DB_PATH);
     sqlite.exec('PRAGMA journal_mode = WAL');
@@ -335,6 +343,7 @@ export function openDb(): Db {
     sqlite.exec(SCHEMA);
     migrate(sqlite);
     db = sqlite as unknown as Db;
+    adb = asyncOf(db);
   }
   seedDefaults(db);
   seedCatalog(db);

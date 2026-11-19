@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { allRules, audit, getDb, num, numOrNull, str, strOrNull, type Row } from './db.js';
+import { allRules, audit, getAsyncDb, num, numOrNull, str, strOrNull, type Row } from './db.js';
 import { CONTEXTS, evaluateAll, SYSTEMS, type Evaluation, type Rule, type Score } from './engine/index.js';
 import { appUrl } from './mail.js';
 import { loadCase, loadResults, printAnalysisHtml, profileOf, storeCaseFile, toInputs } from './routes/cases.routes.js';
@@ -281,20 +281,20 @@ function summaryOf(a: AnalysisRecord): IntegrationAnalysisSummary {
   return { id: a.id, caseId: a.caseId, createdAt: isoTimestamp(a.createdAt) ?? a.createdAt, finalizedAt: isoTimestamp(a.finalizedAt), score: a.score, aiUsed: a.aiUsed, url: analysisUrl(a.caseId, a.id) };
 }
 
-function analysesOfCase(caseId: number): AnalysisRecord[] {
-  return (getDb().prepare(`SELECT ${ANALYSIS_COLS} FROM analyses WHERE case_id = ? ORDER BY id DESC`).all(caseId) as Row[]).map(rowToAnalysis);
+async function analysesOfCase(caseId: number): Promise<AnalysisRecord[]> {
+  return ((await getAsyncDb().prepare(`SELECT ${ANALYSIS_COLS} FROM analyses WHERE case_id = ? ORDER BY id DESC`).all(caseId)) as Row[]).map(rowToAnalysis);
 }
 
-function analysisById(id: number): AnalysisRecord | null {
-  const row = getDb().prepare(`SELECT ${ANALYSIS_COLS} FROM analyses WHERE id = ?`).get(id) as Row | undefined;
+async function analysisById(id: number): Promise<AnalysisRecord | null> {
+  const row = (await getAsyncDb().prepare(`SELECT ${ANALYSIS_COLS} FROM analyses WHERE id = ?`).get(id)) as Row | undefined;
   return row ? rowToAnalysis(row) : null;
 }
 
 interface CaseCounts { filesCount: number; resultsCount: number; updatedAt: string }
-function caseCounts(caseId: number): CaseCounts {
-  const row = getDb()
+async function caseCounts(caseId: number): Promise<CaseCounts> {
+  const row = (await getAsyncDb()
     .prepare('SELECT updated_at, (SELECT COUNT(*) FROM case_files f WHERE f.case_id = c.id) AS files_count, (SELECT COUNT(*) FROM results r WHERE r.case_id = c.id AND r.excluded = 0) AS results_count FROM cases c WHERE c.id = ?')
-    .get(caseId) as Row | undefined;
+    .get(caseId)) as Row | undefined;
   return { filesCount: row ? num(row, 'files_count') : 0, resultsCount: row ? num(row, 'results_count') : 0, updatedAt: row ? str(row, 'updated_at') : '' };
 }
 
@@ -302,8 +302,8 @@ function caseStatus(status: string): IntegrationCase['status'] {
   return status === 'revisado' || status === 'arquivado' ? status : 'aberto';
 }
 
-function toIntegrationCase(c: CaseRow, analyses: AnalysisRecord[]): IntegrationCase {
-  const counts = caseCounts(c.id);
+async function toIntegrationCase(c: CaseRow, analyses: AnalysisRecord[]): Promise<IntegrationCase> {
+  const counts = await caseCounts(c.id);
   const latest = analyses[0];
   return {
     id: c.id,
@@ -321,12 +321,12 @@ function toIntegrationCase(c: CaseRow, analyses: AnalysisRecord[]): IntegrationC
   };
 }
 
-function casesOfPatient(patientCode: string): CaseRow[] {
-  const ids = (getDb().prepare('SELECT id FROM cases WHERE patient_code = ? AND deleted_at IS NULL ORDER BY updated_at DESC, id DESC').all(patientCode) as Row[]).map((r) => num(r, 'id'));
+async function casesOfPatient(patientCode: string): Promise<CaseRow[]> {
+  const ids = ((await getAsyncDb().prepare('SELECT id FROM cases WHERE patient_code = ? AND deleted_at IS NULL ORDER BY updated_at DESC, id DESC').all(patientCode)) as Row[]).map((r) => num(r, 'id'));
   return ids.map(loadCase).filter((c): c is CaseRow => c !== null);
 }
 
-function buildAnalysis(c: CaseRow, a: AnalysisRecord): IntegrationAnalysis {
+async function buildAnalysis(c: CaseRow, a: AnalysisRecord): Promise<IntegrationAnalysis> {
   const catalog = catalogIndex(allRules());
   const evals = evaluateCaseResults(c);
   const markers = evals.map((ev) => markerOf(ev, catalog));
@@ -342,7 +342,7 @@ function buildAnalysis(c: CaseRow, a: AnalysisRecord): IntegrationAnalysis {
     .sort((x, y) => x.label.localeCompare(y.label, 'pt-BR'));
   const finalized = a.finalizedAt !== null;
   const highlightSource = (finalized ? a.finalPatient : null) ?? a.markdownPatient ?? '';
-  const approved = getDb().prepare("SELECT COUNT(*) AS n FROM conduct_items WHERE analysis_id = ? AND status = 'aprovada'").get(a.id) as Row;
+  const approved = (await getAsyncDb().prepare("SELECT COUNT(*) AS n FROM conduct_items WHERE analysis_id = ? AND status = 'aprovada'").get(a.id)) as Row;
   return {
     ...summaryOf(a),
     patientCode: c.patient_code,
@@ -363,12 +363,12 @@ const MAX_SERIES_LIMIT = 50;
  * por data de coleta (ou data da análise quando a coleta não foi informada); a mesma
  * data não se repete — vale o ponto da análise mais recente. Só pontos numéricos.
  */
-function markerSeries(patientCode: string, exams: Set<string> | null, limit: number): IntegrationMarkerSeries[] {
+async function markerSeries(patientCode: string, exams: Set<string> | null, limit: number): Promise<IntegrationMarkerSeries[]> {
   const catalog = catalogIndex(allRules());
   type Acc = { exam: string; label: string; unit: string | null; system: string; byDate: Map<string, IntegrationMarkerPoint> };
   const acc = new Map<string, Acc>();
-  for (const c of casesOfPatient(patientCode)) {
-    const finalizedAnalyses = analysesOfCase(c.id).filter((a) => a.finalizedAt !== null).sort((x, y) => x.id - y.id);
+  for (const c of await casesOfPatient(patientCode)) {
+    const finalizedAnalyses = (await analysesOfCase(c.id)).filter((a) => a.finalizedAt !== null).sort((x, y) => x.id - y.id);
     if (!finalizedAnalyses.length) continue;
     const evals = evaluateCaseResults(c);
     for (const a of finalizedAnalyses) {
@@ -502,7 +502,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
   app.get('/patients/:code/cases', async (request, reply) => {
     const code = codeParam(request);
     if (code === null) return sendError(reply, ERR.notFound, 'Código de paciente inválido.');
-    const cases = casesOfPatient(code).map((c) => toIntegrationCase(c, analysesOfCase(c.id)));
+    const cases = await Promise.all((await casesOfPatient(code)).map(async (c) => toIntegrationCase(c, await analysesOfCase(c.id))));
     record(request, 'patient_cases', 'patient', code, { patient_code: code, cases: cases.length });
     return { data: cases };
   });
@@ -511,9 +511,9 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const id = idParam(request, 'id');
     const c = id === null ? null : loadCase(id);
     if (!c) return sendError(reply, ERR.notFound, 'Caso não encontrado.');
-    const analyses = analysesOfCase(c.id);
+    const analyses = await analysesOfCase(c.id);
     record(request, 'case', 'case', c.id, { patient_code: c.patient_code });
-    return { data: { ...toIntegrationCase(c, analyses), analyses: analyses.map(summaryOf) } };
+    return { data: { ...(await toIntegrationCase(c, analyses)), analyses: analyses.map(summaryOf) } };
   });
 
   app.post('/cases', async (request, reply) => {
@@ -527,12 +527,13 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const prefix = `Criado pelo LN Evolution em ${today}.`;
     const notes = d.notes ? `${prefix}\n${d.notes}` : prefix;
     // Paciente canônico: o `code` é o uuid do clinica-api; cria o cadastro pseudônimo se ainda não existir.
-    let patient = getDb().prepare('SELECT id FROM patients WHERE code = ? AND deleted_at IS NULL').get(d.patientCode) as Row | undefined;
+    const adb = getAsyncDb();
+    let patient = (await adb.prepare('SELECT id FROM patients WHERE code = ? AND deleted_at IS NULL').get(d.patientCode)) as Row | undefined;
     if (!patient) {
-      getDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)').run(d.patientCode, d.patientCode, d.birthDate ?? null, d.sex ?? null, d.comorbidities ?? '', d.medications ?? '', d.supplements ?? '', d.goal ?? '');
-      patient = getDb().prepare('SELECT id FROM patients WHERE code = ?').get(d.patientCode) as Row;
+      await adb.prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)').run(d.patientCode, d.patientCode, d.birthDate ?? null, d.sex ?? null, d.comorbidities ?? '', d.medications ?? '', d.supplements ?? '', d.goal ?? '');
+      patient = (await adb.prepare('SELECT id FROM patients WHERE code = ?').get(d.patientCode)) as Row;
     }
-    const info = getDb()
+    const info = await adb
       .prepare("INSERT INTO cases(patient_id, patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL)")
       .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes);
     const id = Number(info.lastInsertRowid);
@@ -542,11 +543,11 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
 
   app.get('/analyses/:id', async (request, reply) => {
     const id = idParam(request, 'id');
-    const a = id === null ? null : analysisById(id);
+    const a = id === null ? null : await analysisById(id);
     const c = a ? loadCase(a.caseId) : null;
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
     record(request, 'analysis', 'analysis', a.id, { patient_code: c.patient_code, case_id: c.id });
-    return { data: buildAnalysis(c, a) };
+    return { data: await buildAnalysis(c, a) };
   });
 
   app.get('/patients/:code/markers', async (request, reply) => {
@@ -555,7 +556,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const q = MarkersQuery.safeParse(request.query ?? {});
     if (!q.success) return reply.code(400).send({ error: { code: 'VALIDATION', message: 'Parâmetros inválidos: exams (lista separada por vírgula) e limit (1 a 50).' } });
     const exams = q.data.exams ? new Set(q.data.exams.split(',').map((e) => e.trim()).filter(Boolean)) : null;
-    const series = markerSeries(code, exams && exams.size ? exams : null, q.data.limit ?? DEFAULT_SERIES_LIMIT);
+    const series = await markerSeries(code, exams && exams.size ? exams : null, q.data.limit ?? DEFAULT_SERIES_LIMIT);
     record(request, 'patient_markers', 'patient', code, { patient_code: code, exams: exams ? [...exams] : null, series: series.length });
     return { data: series };
   });
@@ -586,7 +587,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
 
   app.get('/analyses/:id/export', async (request, reply) => {
     const id = idParam(request, 'id');
-    const a = id === null ? null : analysisById(id);
+    const a = id === null ? null : await analysisById(id);
     const c = a ? loadCase(a.caseId) : null;
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
     const q = request.query as { format?: string; type?: string };
@@ -598,7 +599,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const markdown = redactPatientName(raw, c.patient_name, c.patient_code) ?? '';
     record(request, 'export_analysis', 'analysis', a.id, { patient_code: c.patient_code, format, type });
     if (format === 'md') return reply.type('text/markdown; charset=utf-8').send(markdown);
-    const row = getDb().prepare('SELECT * FROM analyses WHERE id = ?').get(a.id) as Row;
+    const row = (await getAsyncDb().prepare('SELECT * FROM analyses WHERE id = ?').get(a.id)) as Row;
     return reply.type('text/html; charset=utf-8').send(printAnalysisHtml(c, row, type, markdown));
   });
 }
