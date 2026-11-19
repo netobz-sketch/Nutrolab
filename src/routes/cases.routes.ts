@@ -12,6 +12,7 @@ import { buildPatientReport, buildTechnicalReport, CONDUCT_KIND_LABEL, hormonalW
 import { patientVisualPanel } from '../visuals.js';
 import { previousValues } from '../evolution.js';
 import { allPatients, loadPatient } from './patients.routes.js';
+import { lnEvolutionBase } from '../ln-link.js';
 import { allTemplates, nextPatientCode as nextCode, rowToPatient, type Patient } from '../db.js';
 import { h, layout } from '../views/html.js';
 import { analysisPage, caseFormPage, caseFormulasPage, casePage, casesPage, conductPage, conferencePage, type AnalysisRow, type CaseRow, type ConductRow, type FileRow, type ResultRow } from '../views/pages.js';
@@ -121,6 +122,8 @@ export function rowToCase(row: Row): CaseRow {
     results_count: numOrNull(row, 'results_count') ?? undefined,
     analyses_count: numOrNull(row, 'analyses_count') ?? undefined,
     last_collection: strOrNull(row, 'last_collection'),
+    origin: str(row, 'origin') === 'ln' ? 'ln' : 'manual',
+    ln_patient_id: strOrNull(row, 'ln_patient_id'),
   };
 }
 
@@ -300,7 +303,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
          FROM cases c WHERE c.deleted_at IS NULL ORDER BY c.updated_at DESC LIMIT 200`,
       )
       .all()) as Row[];
-    return page(request, reply, 'Casos', casesPage(rows.map(rowToCase), (await tableVersion()), aiEnabled()));
+    return page(request, reply, 'Casos', casesPage(rows.map(rowToCase), (await tableVersion()), aiEnabled(), lnEvolutionBase()));
   });
 
   app.get('/casos/novo', async (request, reply) => {
@@ -310,7 +313,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (p) {
       const last = (await getAsyncDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id)) as Row | undefined;
       const base = last ? rowToCase(last) : null;
-      prefill = { id: 0, patient_id: p.id, cycle_phase: '', contraceptive: base?.contraceptive ?? '', hrt: base?.hrt ?? '', patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
+      prefill = { id: 0, patient_id: p.id, origin: 'manual', ln_patient_id: null, cycle_phase: '', contraceptive: base?.contraceptive ?? '', hrt: base?.hrt ?? '', patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
     }
     const body = caseFormPage(prefill, null, await allPatients(), p?.id ?? null).replace('action="/casos/0/editar"', 'action="/casos"');
     return page(request, reply, 'Novo caso', body, p && p.consent_status !== 'assinado' ? { kind: 'warn', text: 'Este paciente ainda não tem consentimento LGPD registrado como assinado.' } : null);

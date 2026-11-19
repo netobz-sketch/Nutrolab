@@ -214,6 +214,9 @@ const MIGRATIONS: Array<[table: string, column: string, ddl: string]> = [
   ['cases', 'cycle_phase', "TEXT NOT NULL DEFAULT ''"],
   ['cases', 'contraceptive', "TEXT NOT NULL DEFAULT ''"],
   ['cases', 'hrt', "TEXT NOT NULL DEFAULT ''"],
+  // Origem do caso: 'manual' (tela) ou 'ln' (API de integração); ln_patient_id = id do paciente no LN Evolution, para o link de volta ao prontuário.
+  ['cases', 'origin', "TEXT NOT NULL DEFAULT 'manual'"],
+  ['cases', 'ln_patient_id', 'TEXT'],
 ];
 
 const EXTRA_SCHEMA = `
@@ -349,6 +352,8 @@ export async function openDb(): Promise<AsyncDb> {
   await seedDefaults(database);
   await seedCatalog(database);
   await backfillPatients(database);
+  // Casos anteriores à coluna `origin`: a integração sempre criou com autor nulo e esta nota (idempotente).
+  await database.prepare("UPDATE cases SET origin = 'ln' WHERE origin = 'manual' AND created_by IS NULL AND notes LIKE 'Criado pelo LN Evolution em %'").run();
   settingCache.clear();
   for (const r of (await database.prepare('SELECT key, value FROM settings').all()) as Row[]) settingCache.set(str(r, 'key'), str(r, 'value'));
   adb = database;

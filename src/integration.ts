@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { allRules, audit, getAsyncDb, num, numOrNull, str, strOrNull, type Row } from './db.js';
 import { CONTEXTS, evaluateAll, SYSTEMS, type Evaluation, type Rule, type Score } from './engine/index.js';
 import { appUrl } from './mail.js';
+import { LN_PATIENT_ID } from './ln-link.js';
 import { loadCase, loadResults, printAnalysisHtml, profileOf, storeCaseFile, toInputs } from './routes/cases.routes.js';
 import type { CaseRow } from './views/pages.js';
 
@@ -80,6 +81,18 @@ export interface IntegrationAnalysis extends IntegrationAnalysisSummary {
   approvedConductCount: number;
   patientReportMarkdown: string | null;
   technicalReportMarkdown: string | null;
+}
+
+/** v2.1: resumo para o PDF do LN Evolution. Só dado aprovado (análise FINALIZADA), sem markdown. */
+export interface IntegrationReportSummary {
+  patientCode: string;
+  analysisId: number;
+  caseId: number;
+  score: number | null;
+  status: SystemStatus;
+  finalizedAt: string | null;
+  collectionDate: string | null;
+  highlights: { favorable: string[]; attention: string[] };
 }
 
 export interface IntegrationMarkerPoint {
@@ -353,10 +366,45 @@ async function buildAnalysis(c: CaseRow, a: AnalysisRecord): Promise<Integration
     patientCode: c.patient_code,
     scoreBySystem,
     markers,
-    highlights: highlightsOf(highlightSource),
+    highlights: highlightsOf(redactPatientName(highlightSource, c.patient_name, c.patient_code) ?? ''),
     approvedConductCount: num(approved, 'n'),
     patientReportMarkdown: finalized ? redactPatientName(a.finalPatient, c.patient_name, c.patient_code) : null,
     technicalReportMarkdown: finalized ? redactPatientName(a.finalTechnical, c.patient_name, c.patient_code) : null,
+  };
+}
+
+/**
+ * Análise FINALIZADA mais recente do paciente (entre todos os casos não excluídos), com score,
+ * data e destaques do relatório do paciente já com o nome redigido. Nada de markdown, marcadores
+ * ou conduta: é o mínimo para o PDF do LN. Sem análise finalizada → null.
+ */
+async function reportSummary(patientCode: string): Promise<IntegrationReportSummary | null> {
+  const row = (await getAsyncDb()
+    .prepare(
+      `SELECT a.id, a.case_id, a.score, a.finalized_at, a.final_patient, c.patient_name, p.name AS registry_name,
+         (SELECT MAX(r.collection_date) FROM results r WHERE r.case_id = c.id AND r.excluded = 0) AS collection_date
+       FROM analyses a JOIN cases c ON c.id = a.case_id LEFT JOIN patients p ON p.id = c.patient_id
+       WHERE c.patient_code = ? AND c.deleted_at IS NULL AND a.finalized_at IS NOT NULL
+       ORDER BY a.finalized_at DESC, a.id DESC LIMIT 1`,
+    )
+    .get(patientCode)) as Row | undefined;
+  if (!row) return null;
+  const score = numOrNull(row, 'score');
+  // Redige o nome do caso e o do cadastro do paciente (podem divergir).
+  // Pacientes criados pela integração têm nome = código: não redige o próprio código de novo.
+  const caseName = str(row, 'patient_name').trim();
+  const registryName = (strOrNull(row, 'registry_name') ?? '').trim();
+  const byCase = redactPatientName(strOrNull(row, 'final_patient'), caseName, patientCode);
+  const source = (registryName && registryName !== patientCode && registryName !== caseName ? redactPatientName(byCase, registryName, patientCode) : byCase) ?? '';
+  return {
+    patientCode,
+    analysisId: num(row, 'id'),
+    caseId: num(row, 'case_id'),
+    score,
+    status: systemStatus(score),
+    finalizedAt: isoTimestamp(strOrNull(row, 'finalized_at')),
+    collectionDate: strOrNull(row, 'collection_date'),
+    highlights: highlightsOf(source),
   };
 }
 
@@ -408,6 +456,8 @@ const CreateCaseBody = z.object({
   medications: z.string().trim().max(2000).nullish(),
   supplements: z.string().trim().max(2000).nullish(),
   notes: z.string().trim().max(2000).nullish(),
+  // v2.1: id do paciente no LN Evolution, só para o link de volta ao prontuário na tela /casos.
+  lnPatientId: z.string().trim().regex(LN_PATIENT_ID, 'lnPatientId: use só letras, números, _ ou - (até 64)').nullish(),
 });
 
 const MarkersQuery = z.object({
@@ -539,8 +589,8 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
       patient = (await adb.prepare('SELECT id FROM patients WHERE code = ?').get(d.patientCode)) as Row;
     }
     const info = await adb
-      .prepare("INSERT INTO cases(patient_id, patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL)")
-      .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes);
+      .prepare("INSERT INTO cases(patient_id, patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by, origin, ln_patient_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL, 'ln', ?)")
+      .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes, d.lnPatientId ?? null);
     const id = Number(info.lastInsertRowid);
     await record(request, 'create_case', 'case', id, { patient_code: d.patientCode });
     return reply.code(201).send({ data: { id, url: caseUrl(id) } });
@@ -553,6 +603,14 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
     await record(request, 'analysis', 'analysis', a.id, { patient_code: c.patient_code, case_id: c.id });
     return { data: await buildAnalysis(c, a) };
+  });
+
+  app.get('/patients/:code/summary-for-report', async (request, reply) => {
+    const code = codeParam(request);
+    if (code === null) return sendError(reply, ERR.notFound, 'Código de paciente inválido.');
+    const summary = await reportSummary(code);
+    await record(request, 'patient_report_summary', 'patient', code, { patient_code: code, analysis_id: summary?.analysisId ?? null });
+    return { data: summary };
   });
 
   app.get('/patients/:code/markers', async (request, reply) => {

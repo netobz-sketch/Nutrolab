@@ -461,6 +461,39 @@ test('design LN: só tema claro, sem alternância, nome e fonte local', async ()
   assert.equal((await app.inject({ method: 'GET', url: '/assets/fonts/..%2Fpackage.json', headers: H })).statusCode, 404);
 });
 
+test('/casos: coluna Origem e link ao prontuário do LN só com LN_EVOLUTION_PUBLIC_URL válida e id do paciente', async () => {
+  const { lnEvolutionBase, lnPatientUrl } = await import('../src/ln-link.js');
+  assert.equal(lnEvolutionBase('https://ln.example.com/'), 'https://ln.example.com');
+  assert.equal(lnEvolutionBase('https://ln.example.com/app/'), 'https://ln.example.com/app');
+  for (const bad of ['', '   ', 'javascript:alert(1)', 'ftp://ln.example.com', 'https://u:p@ln.example.com', 'https://ln.example.com/?x=1', 'nao-e-url', undefined]) assert.equal(lnEvolutionBase(bad), null, String(bad));
+  assert.equal(lnPatientUrl('https://ln.example.com', 'abc-123'), 'https://ln.example.com/pacientes/abc-123');
+  assert.equal(lnPatientUrl('https://ln.example.com', '../x'), null);
+  assert.equal(lnPatientUrl(null, 'abc-123'), null);
+  assert.equal(lnPatientUrl('https://ln.example.com', null), null);
+
+  const { getAsyncDb } = await import('../src/db.js');
+  await getAsyncDb().prepare("UPDATE cases SET origin = 'ln', ln_patient_id = 'abc-123' WHERE id = 1").run();
+  const saved = process.env.LN_EVOLUTION_PUBLIC_URL;
+  try {
+    delete process.env.LN_EVOLUTION_PUBLIC_URL;
+    const hidden = await get('/casos');
+    assert.equal(hidden.statusCode, 200);
+    assert.match(hidden.body, /<th>Origem<\/th>/);
+    assert.match(hidden.body, /<span class="tag">LN<\/span>/);
+    assert.doesNotMatch(hidden.body, /prontuário<\/a>/, 'sem a variável o link fica oculto');
+    process.env.LN_EVOLUTION_PUBLIC_URL = 'https://ln.example.com/';
+    const shown = await get('/casos');
+    assert.match(shown.body, /href="https:\/\/ln\.example\.com\/pacientes\/abc-123" target="_blank" rel="noopener noreferrer">prontuário<\/a>/);
+    process.env.LN_EVOLUTION_PUBLIC_URL = 'javascript:alert(1)';
+    assert.doesNotMatch((await get('/casos')).body, /prontuário<\/a>|javascript:/);
+  } finally {
+    if (saved === undefined) delete process.env.LN_EVOLUTION_PUBLIC_URL;
+    else process.env.LN_EVOLUTION_PUBLIC_URL = saved;
+    await getAsyncDb().prepare("UPDATE cases SET origin = 'manual', ln_patient_id = NULL WHERE id = 1").run();
+  }
+  assert.match((await get('/casos')).body, /Manual/);
+});
+
 test('id numérico inválido na URL → 404 antes de consultar o banco (Postgres dava 500 por 22P02)', async () => {
   const { isValidId, invalidIdParam } = await import('../src/route-ids.js');
   for (const ok of ['1', '42', '999999999999999']) assert.equal(isValidId(ok), true, ok);

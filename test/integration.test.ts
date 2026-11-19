@@ -341,6 +341,69 @@ test('id numérico inválido → 404 no envelope da API; o token continua sendo 
   assert.equal((await get(`/api/integration/cases/${caseId}`)).statusCode, 200, 'id válido continua funcionando');
 });
 
+test('v2.1 GET /patients/:code/summary-for-report: só a análise finalizada mais recente, sem markdown e sem nome', async () => {
+  const r = await get(`/api/integration/patients/${PATIENT}/summary-for-report`);
+  assert.equal(r.statusCode, 200);
+  const s = r.json().data as Record<string, unknown> & { highlights: { favorable: string[]; attention: string[] } };
+  assert.deepEqual(Object.keys(s).sort(), ['analysisId', 'caseId', 'collectionDate', 'finalizedAt', 'highlights', 'patientCode', 'score', 'status']);
+  assert.equal(s.patientCode, PATIENT);
+  // Esperado: a FINALIZADA mais recente do paciente (o teste de séries criou outra, mais nova, e um rascunho depois dela).
+  const expected = (await getAsyncDb().prepare("SELECT a.id, a.case_id, a.score FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.patient_code = ? AND c.deleted_at IS NULL AND a.finalized_at IS NOT NULL ORDER BY a.finalized_at DESC, a.id DESC LIMIT 1").get(PATIENT)) as { id: number; case_id: number; score: number | null };
+  const newestAny = (await getAsyncDb().prepare('SELECT MAX(a.id) AS m FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.patient_code = ? AND c.deleted_at IS NULL').get(PATIENT)) as { m: number };
+  assert.ok(newestAny.m > expected.id, 'há rascunho mais novo que a finalizada: o resumo não pode usá-lo');
+  assert.equal(s.analysisId, expected.id);
+  assert.equal(s.caseId, expected.case_id);
+  assert.equal(s.score, expected.score);
+  assert.match(String(s.finalizedAt), /T.*Z$/);
+  assert.match(String(s.collectionDate), /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(Array.isArray(s.highlights.favorable) && Array.isArray(s.highlights.attention));
+  assert.doesNotMatch(r.body, /Maria|Exemplo da Silva|#|\*\*/, 'sem nome do paciente e sem markdown');
+  // Destaque que cita o nome do paciente: sai redigido (o PDF do LN não pode carregar o nome).
+  const savedFinal = (await getAsyncDb().prepare('SELECT final_patient FROM analyses WHERE id = ?').get(expected.id)) as { final_patient: string | null };
+  const savedName = (await getAsyncDb().prepare('SELECT patient_name FROM cases WHERE id = ?').get(expected.case_id)) as { patient_name: string | null };
+  await getAsyncDb().prepare('UPDATE cases SET patient_name = ? WHERE id = ?').run('Maria Exemplo da Silva', expected.case_id);
+  const pid = (await getAsyncDb().prepare('SELECT patient_id FROM cases WHERE id = ?').get(expected.case_id)) as { patient_id: number };
+  const savedRegistry = (await getAsyncDb().prepare('SELECT name FROM patients WHERE id = ?').get(pid.patient_id)) as { name: string };
+  await getAsyncDb().prepare('UPDATE patients SET name = ? WHERE id = ?').run('Maria E. Silva', pid.patient_id);
+  await getAsyncDb().prepare('UPDATE analyses SET final_patient = ? WHERE id = ?').run('## Pontos favoráveis\n\nMaria Exemplo da Silva, sua glicose está ótima.\n\n## Pontos que merecem atenção\n\nA vitamina D de Maria Exemplo da Silva está baixa.\n', expected.id);
+  const named = await get(`/api/integration/patients/${PATIENT}/summary-for-report`);
+  const hl = named.json().data.highlights as { favorable: string[]; attention: string[] };
+  assert.equal(hl.favorable.length, 1);
+  assert.equal(hl.attention.length, 1);
+  assert.doesNotMatch(named.body, /Maria|Exemplo da Silva|##/);
+  assert.match(hl.favorable[0] ?? '', new RegExp(`^código ${PATIENT}, sua glicose`));
+  // nome só no cadastro (o do caso é outro): também redigido
+  await getAsyncDb().prepare('UPDATE analyses SET final_patient = ? WHERE id = ?').run('## Pontos favoráveis\n\nMaria E. Silva, tudo certo.\n', expected.id);
+  assert.doesNotMatch((await get(`/api/integration/patients/${PATIENT}/summary-for-report`)).body, /Maria/);
+  // cadastro com nome = código (paciente criado pela integração): o código não é redigido duas vezes
+  await getAsyncDb().prepare('UPDATE patients SET name = ? WHERE id = ?').run(PATIENT, pid.patient_id);
+  await getAsyncDb().prepare('UPDATE analyses SET final_patient = ? WHERE id = ?').run('## Pontos favoráveis\n\nMaria Exemplo da Silva, tudo certo.\n', expected.id);
+  const once = (await get(`/api/integration/patients/${PATIENT}/summary-for-report`)).json().data.highlights.favorable[0] as string;
+  assert.equal(once, `código ${PATIENT}, tudo certo.`);
+  await getAsyncDb().prepare('UPDATE analyses SET final_patient = ? WHERE id = ?').run(savedFinal.final_patient, expected.id);
+  await getAsyncDb().prepare('UPDATE cases SET patient_name = ? WHERE id = ?').run(savedName.patient_name, expected.case_id);
+  await getAsyncDb().prepare('UPDATE patients SET name = ? WHERE id = ?').run(savedRegistry.name, pid.patient_id);
+
+  const none = await get('/api/integration/patients/paciente-sem-analise/summary-for-report');
+  assert.equal(none.statusCode, 200);
+  assert.equal(none.json().data, null);
+  assert.equal((await get('/api/integration/patients/%3Cscript%3E/summary-for-report')).statusCode, 404);
+  // os destaques da análise completa (v1) também saem com o nome redigido
+  assert.doesNotMatch(JSON.stringify((await get(`/api/integration/analyses/${analysisId}`)).json().data.highlights), /Maria|Exemplo da Silva/);
+});
+
+test('v2.1 POST /cases: origem "ln" e lnPatientId guardado; id inválido recusado', async () => {
+  const bad = await post('/api/integration/cases', { patientCode: PATIENT, lnPatientId: '../admin' });
+  assert.equal(bad.statusCode, 400);
+  assert.match(bad.json().error.message, /lnPatientId/);
+  const created = await post('/api/integration/cases', { patientCode: PATIENT, lnPatientId: '7c1e0b8a-1f2d-4e3a-9b8c-0d1e2f3a4b5c' });
+  assert.equal(created.statusCode, 201);
+  const row = (await getAsyncDb().prepare('SELECT origin, ln_patient_id FROM cases WHERE id = ?').get(created.json().data.id)) as { origin: string; ln_patient_id: string | null };
+  assert.deepEqual({ ...row }, { origin: 'ln', ln_patient_id: '7c1e0b8a-1f2d-4e3a-9b8c-0d1e2f3a4b5c' });
+  const old = (await getAsyncDb().prepare('SELECT origin, ln_patient_id FROM cases WHERE id = ?').get(caseId)) as { origin: string; ln_patient_id: string | null };
+  assert.deepEqual({ ...old }, { origin: 'ln', ln_patient_id: null }, 'caso criado pela integração sem lnPatientId continua origem ln');
+});
+
 test('auditoria registra cada chamada com user_id nulo e ação integ_*', async () => {
   const rows = (await getAsyncDb().prepare("SELECT action, entity, user_id, details, request_id FROM audit_log WHERE action LIKE 'integ_%' ORDER BY id").all()) as Array<{ action: string; entity: string; user_id: number | null; details: string | null; request_id: string | null }>;
   const actions = new Set(rows.map((r) => r.action));

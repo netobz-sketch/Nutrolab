@@ -4,6 +4,7 @@ import type { SessionUser } from '../auth.js';
 import { formatCpf } from '../cpf.js';
 import type { ConductTemplate, Formula, Patient } from '../db.js';
 import type { Evaluation, Guidance, Rule } from '../engine/index.js';
+import { lnPatientUrl } from '../ln-link.js';
 import { attr, brandMark, fmtDate, h, icon, option, statusTag } from './html.js';
 
 export interface CaseRow {
@@ -31,6 +32,8 @@ export interface CaseRow {
   results_count?: number;
   analyses_count?: number;
   last_collection?: string | null;
+  origin: 'manual' | 'ln';
+  ln_patient_id: string | null;
 }
 export interface FileRow { id: number; original_name: string; size: number; created_at: string; mime: string }
 export interface ResultRow { id: number; exam_raw: string; exam_canonical: string | null; value_raw: string; unit_raw: string | null; lab_reference: string | null; lab_flag: string | null; collection_date: string | null; source_file: string | null; page: number | null; confidence: string; origin: string; checked: boolean; excluded: boolean }
@@ -87,15 +90,20 @@ export function resetPage(token: string, error: string | null, dead: boolean): s
   return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a><h1 style="text-align:center;font-size:20px">Definir nova senha</h1>${error ? `<div class="flash err">${h(error)}</div>` : ''}${dead ? '' : `<form method="post" action="/redefinir/${attr(token)}"><label>Nova senha (mín. 10 caracteres)</label><input name="password" type="password" autocomplete="new-password" minlength="10" required autofocus><label>Confirmar nova senha</label><input name="confirm" type="password" autocomplete="new-password" required><p><button class="btn" type="submit" style="width:100%">Salvar e entrar</button></p></form>`}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
 }
 
-export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean): string {
-  const rows = cases.map((c) => `<tr><td><a href="/casos/${c.id}" style="font-weight:600;text-decoration:none">${h(c.patient_code)}</a></td><td>${h(c.sex ?? '—')}</td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count ?? 0}</td><td class="num">${c.analyses_count ?? 0}</td><td>${statusTag(c.status)}</td><td class="muted">${fmtDate(c.created_at)}</td></tr>`).join('');
+export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean, lnBase: string | null = null): string {
+  const originCell = (c: CaseRow) => {
+    if (c.origin !== 'ln') return '<td><span class="muted small">Manual</span></td>';
+    const link = lnPatientUrl(lnBase, c.ln_patient_id);
+    return `<td><span class="tag">LN</span>${link ? ` <a class="small" href="${attr(link)}" target="_blank" rel="noopener noreferrer">prontuário</a>` : ''}</td>`;
+  };
+  const rows = cases.map((c) => `<tr><td><a href="/casos/${c.id}" style="font-weight:600;text-decoration:none">${h(c.patient_code)}</a></td>${originCell(c)}<td>${h(c.sex ?? '—')}</td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count ?? 0}</td><td class="num">${c.analyses_count ?? 0}</td><td>${statusTag(c.status)}</td><td class="muted">${fmtDate(c.created_at)}</td></tr>`).join('');
   const open = cases.filter((c) => c.status === 'aberto').length;
   const reviewed = cases.filter((c) => c.status === 'revisado').length;
   return `<div class="pagehead"><div><div class="crumbs">LN Medicina Integrada · Exames</div><h1>Casos</h1><div class="sub">Tabela clínica: ${h(tableVersion)}</div></div><a class="btn" href="/casos/novo">Novo caso</a></div>
 ${tableVersion === 'sem regras ativas' ? '<div class="flash warn">A tabela clínica não tem regras ativas: os exames serão organizados, mas nenhum resultado será classificado. Ative regras em <a href="/regras">Regras</a>.</div>' : ''}
 ${aiOn ? '' : '<div class="flash warn">IA desligada (sem ANTHROPIC_API_KEY): leitura automática de PDF e redação ficam indisponíveis; o lançamento manual e o motor de regras funcionam normalmente.</div>'}
 <div class="kpis"><div class="kpi"><span class="k">Casos</span><span class="v">${cases.length}</span><span class="d">últimos 200</span></div><div class="kpi warn"><span class="k">Em aberto</span><span class="v">${open}</span><span class="d">aguardando revisão</span></div><div class="kpi ok"><span class="k">Revisados</span><span class="v">${reviewed}</span><span class="d">pelo médico</span></div></div>
-<div class="card flush">${cases.length ? `<div class="tablewrap"><table><thead><tr><th>Código</th><th>Sexo</th><th>Última coleta</th><th class="num">Resultados</th><th class="num">Análises</th><th>Status</th><th>Criado</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="card-body muted">Nenhum caso ainda. Crie o primeiro.</div>'}</div>`;
+<div class="card flush">${cases.length ? `<div class="tablewrap"><table><thead><tr><th>Código</th><th>Origem</th><th>Sexo</th><th>Última coleta</th><th class="num">Resultados</th><th class="num">Análises</th><th>Status</th><th>Criado</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="card-body muted">Nenhum caso ainda. Crie o primeiro.</div>'}</div>`;
 }
 
 function contextChips(selected: string[], name = 'contexts'): string {
