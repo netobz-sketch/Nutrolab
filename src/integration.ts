@@ -7,8 +7,9 @@
  * - Isenta da checagem de `ALLOWED_HOSTS` (ver hook em app.ts): chega pela rede
  *   interna do Docker com host `nutrolab:8090`. No Caddy público o prefixo é
  *   bloqueado, então o token nunca é aceito pela internet.
- * - Só leitura dos dados clínicos já produzidos pelo motor; a única escrita é a
- *   criação de caso em branco (status `aberto`, `created_by` null).
+ * - Só leitura dos dados clínicos já produzidos pelo motor; as escritas são a
+ *   criação de caso em branco (status `aberto`, `created_by` null, ligado ao
+ *   paciente pelo `code`) e o envio de anexos ao caso (v2).
  * - Nunca devolve nome de paciente: o DTO não tem o campo e os relatórios em
  *   Markdown têm a linha de identificação reduzida ao código.
  */
@@ -19,7 +20,7 @@ import { z } from 'zod';
 import { allRules, audit, getDb, num, numOrNull, str, strOrNull, type Row } from './db.js';
 import { CONTEXTS, evaluateAll, SYSTEMS, type Evaluation, type Rule, type Score } from './engine/index.js';
 import { appUrl } from './mail.js';
-import { loadCase, loadResults, profileOf, toInputs } from './routes/cases.routes.js';
+import { loadCase, loadResults, printAnalysisHtml, profileOf, storeCaseFile, toInputs } from './routes/cases.routes.js';
 import type { CaseRow } from './views/pages.js';
 
 /* ----------------------------------------------------------------- DTOs */
@@ -525,9 +526,15 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const today = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
     const prefix = `Criado pelo LN Evolution em ${today}.`;
     const notes = d.notes ? `${prefix}\n${d.notes}` : prefix;
+    // Paciente canônico: o `code` é o uuid do clinica-api; cria o cadastro pseudônimo se ainda não existir.
+    let patient = getDb().prepare('SELECT id FROM patients WHERE code = ? AND deleted_at IS NULL').get(d.patientCode) as Row | undefined;
+    if (!patient) {
+      getDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)').run(d.patientCode, d.patientCode, d.birthDate ?? null, d.sex ?? null, d.comorbidities ?? '', d.medications ?? '', d.supplements ?? '', d.goal ?? '');
+      patient = getDb().prepare('SELECT id FROM patients WHERE code = ?').get(d.patientCode) as Row;
+    }
     const info = getDb()
-      .prepare("INSERT INTO cases(patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL)")
-      .run(d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes);
+      .prepare("INSERT INTO cases(patient_id, patient_code, sex, birth_date, contexts, medications, supplements, comorbidities, goal, notes, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aberto', NULL)")
+      .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes);
     const id = Number(info.lastInsertRowid);
     record(request, 'create_case', 'case', id, { patient_code: d.patientCode });
     return reply.code(201).send({ data: { id, url: caseUrl(id) } });
@@ -551,5 +558,47 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     const series = markerSeries(code, exams && exams.size ? exams : null, q.data.limit ?? DEFAULT_SERIES_LIMIT);
     record(request, 'patient_markers', 'patient', code, { patient_code: code, exams: exams ? [...exams] : null, series: series.length });
     return { data: series };
+  });
+
+  /* ------------------------------------------------------------- v2 */
+  app.post('/cases/:id/files', async (request, reply) => {
+    const id = idParam(request, 'id');
+    const c = id === null ? null : loadCase(id);
+    if (!c) return sendError(reply, ERR.notFound, 'Caso não encontrado.');
+    if (!request.isMultipart()) return reply.code(400).send({ error: { code: 'VALIDATION', message: 'Envie multipart/form-data com um arquivo.' } });
+    let fileId: number | null = null;
+    let rejected = false;
+    for await (const part of request.files({ limits: { fileSize: 25 * 1024 * 1024, files: 1 } })) {
+      const buf = await part.toBuffer();
+      if (part.file.truncated) {
+        rejected = true;
+        continue;
+      }
+      fileId = storeCaseFile(c.id, buf, part.filename);
+      if (fileId === null) rejected = true;
+    }
+    if (fileId === null) {
+      return reply.code(rejected ? 415 : 400).send({ error: { code: rejected ? 'UNSUPPORTED_FILE' : 'VALIDATION', message: rejected ? 'Formato não aceito: PDF, JPG, PNG ou WebP até 25 MB.' : 'Nenhum arquivo enviado.' } });
+    }
+    record(request, 'upload_file', 'case', c.id, { patient_code: c.patient_code, file_id: fileId });
+    return reply.code(201).send({ data: { fileId } });
+  });
+
+  app.get('/analyses/:id/export', async (request, reply) => {
+    const id = idParam(request, 'id');
+    const a = id === null ? null : analysisById(id);
+    const c = a ? loadCase(a.caseId) : null;
+    if (!a || !c) return sendError(reply, ERR.notFound, 'Análise não encontrada.');
+    const q = request.query as { format?: string; type?: string };
+    const format = q.format === 'html' ? 'html' : q.format === 'md' || q.format === undefined ? 'md' : null;
+    const type = q.type === 'tecnico' ? 'tecnico' : q.type === 'resumido' || q.type === undefined ? 'resumido' : null;
+    if (!format || !type) return reply.code(400).send({ error: { code: 'VALIDATION', message: 'format deve ser md ou html; type deve ser resumido ou tecnico.' } });
+    if (!a.finalizedAt) return reply.code(409).send({ error: { code: 'NOT_FINALIZED', message: 'O relatório só é exportado depois de finalizado pelo médico.' } });
+    const raw = type === 'tecnico' ? a.finalTechnical : a.finalPatient;
+    const markdown = redactPatientName(raw, c.patient_name, c.patient_code) ?? '';
+    record(request, 'export_analysis', 'analysis', a.id, { patient_code: c.patient_code, format, type });
+    if (format === 'md') return reply.type('text/markdown; charset=utf-8').send(markdown);
+    const row = getDb().prepare('SELECT * FROM analyses WHERE id = ?').get(a.id) as Row;
+    return reply.type('text/html; charset=utf-8').send(printAnalysisHtml(c, row, type, markdown));
   });
 }

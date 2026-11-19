@@ -13,7 +13,7 @@ process.env.NODE_ENV = 'test';
 process.env.APP_URL = 'https://nutrolab.teste.local/';
 // Host público exigido pelas telas; a API de integração chega com outro host (rede interna do Docker).
 process.env.ALLOWED_HOSTS = 'nutrolab.teste.local';
-process.env.INTEGRATION_RATE_LIMIT = '30';
+process.env.INTEGRATION_RATE_LIMIT = '45';
 delete process.env.INTEGRATION_TOKEN;
 delete process.env.ANTHROPIC_API_KEY;
 
@@ -283,10 +283,60 @@ test('GET /patients/:code/markers: séries cronológicas só de análises finali
   assert.equal(cases[0]?.id, case3, 'ordem decrescente por updatedAt');
 });
 
+test('v2 POST /cases/:id/files: aceita PDF/imagem pelo mesmo pipeline e recusa outros formatos', async () => {
+  const boundary = '----integ';
+  const mp = (name: string, type: string, data: Buffer) => Buffer.concat([Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`), data, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+  const send = (body: Buffer) => app.inject({ method: 'POST', url: `/api/integration/cases/${caseId}/files`, headers: { ...INTERNAL, 'x-integration-token': TOKEN, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: body });
+  const ok = await send(mp('laudo.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n% laudo de teste\n')));
+  assert.equal(ok.statusCode, 201);
+  const fileId = ok.json().data.fileId as number;
+  assert.ok(fileId > 0);
+  const row = getDb().prepare('SELECT case_id, mime, original_name FROM case_files WHERE id = ?').get(fileId) as { case_id: number; mime: string; original_name: string };
+  assert.equal(row.case_id, caseId);
+  assert.equal(row.mime, 'application/pdf');
+  assert.equal(row.original_name, 'laudo.pdf');
+  const bad = await send(mp('nota.txt', 'text/plain', Buffer.from('texto qualquer que não é laudo')));
+  assert.equal(bad.statusCode, 415);
+  assert.equal(bad.json().error.code, 'UNSUPPORTED_FILE');
+  const json = await post(`/api/integration/cases/${caseId}/files`, {});
+  assert.equal(json.statusCode, 400);
+  const missing = await app.inject({ method: 'POST', url: '/api/integration/cases/999999/files', headers: { ...INTERNAL, 'x-integration-token': TOKEN, 'content-type': `multipart/form-data; boundary=${boundary}` }, payload: mp('laudo.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n')) });
+  assert.equal(missing.statusCode, 404);
+});
+
+test('v2 GET /analyses/:id/export: md e html só quando finalizada, sem o nome do paciente', async () => {
+  const md = await get(`/api/integration/analyses/${analysisId}/export?format=md&type=tecnico`);
+  assert.equal(md.statusCode, 200);
+  assert.match(md.headers['content-type'] ?? '', /text\/markdown/);
+  assert.match(md.body, /Relatório técnico de exames/);
+  assert.doesNotMatch(md.body, /Maria/);
+  const html = await get(`/api/integration/analyses/${analysisId}/export?format=html`);
+  assert.equal(html.statusCode, 200);
+  assert.match(html.headers['content-type'] ?? '', /text\/html/);
+  assert.match(html.body, /Relatório dos seus exames/);
+  assert.match(html.body, /Imprimir \/ salvar em PDF/);
+  assert.doesNotMatch(html.body, /Maria/);
+  assert.equal((await get(`/api/integration/analyses/${analysisId}/export?format=pdf`)).statusCode, 400);
+  // minuta: 409
+  const db = getDb();
+  const draftId = Number(db.prepare("INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used) VALUES (?, 'x', 'x', 'x', 'v', 0)").run(caseId).lastInsertRowid);
+  const draft = await get(`/api/integration/analyses/${draftId}/export?format=md`);
+  assert.equal(draft.statusCode, 409);
+  assert.equal(draft.json().error.code, 'NOT_FINALIZED');
+  db.prepare('DELETE FROM analyses WHERE id = ?').run(draftId);
+});
+
+test('v2 POST /cases liga o caso ao paciente canônico pelo code (uuid do clinica-api)', async () => {
+  const p = getDb().prepare('SELECT id FROM patients WHERE code = ?').get(PATIENT) as { id: number } | undefined;
+  assert.ok(p);
+  const c = getDb().prepare('SELECT patient_id FROM cases WHERE id = ?').get(caseId) as { patient_id: number };
+  assert.equal(c.patient_id, p.id);
+});
+
 test('auditoria registra cada chamada com user_id nulo e ação integ_*', async () => {
   const rows = getDb().prepare("SELECT action, entity, user_id, details, request_id FROM audit_log WHERE action LIKE 'integ_%' ORDER BY id").all() as Array<{ action: string; entity: string; user_id: number | null; details: string | null; request_id: string | null }>;
   const actions = new Set(rows.map((r) => r.action));
-  for (const a of ['integ_health', 'integ_patient_cases', 'integ_case', 'integ_create_case', 'integ_analysis', 'integ_patient_markers']) assert.ok(actions.has(a), a);
+  for (const a of ['integ_health', 'integ_patient_cases', 'integ_case', 'integ_create_case', 'integ_analysis', 'integ_patient_markers', 'integ_upload_file', 'integ_export_analysis']) assert.ok(actions.has(a), a);
   assert.ok(rows.every((r) => r.user_id === null && r.request_id));
   const create = rows.find((r) => r.action === 'integ_create_case');
   assert.equal(JSON.parse(create?.details ?? '{}').patient_code, PATIENT);
@@ -294,9 +344,9 @@ test('auditoria registra cada chamada com user_id nulo e ação integ_*', async 
 });
 
 test('rate limit por token: excedeu o limite por minuto → 429', async () => {
-  // Limite injetado por INTEGRATION_RATE_LIMIT=30; as chamadas anteriores já consumiram parte da janela.
+  // Limite injetado por INTEGRATION_RATE_LIMIT=45; as chamadas anteriores já consumiram parte da janela.
   let last = 0;
-  for (let i = 0; i < 40; i += 1) {
+  for (let i = 0; i < 60; i += 1) {
     last = (await get('/api/integration/health')).statusCode;
     if (last === 429) break;
   }

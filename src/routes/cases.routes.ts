@@ -20,13 +20,26 @@ import type { Score } from '../engine/index.js';
 const MAX_PDF = 25 * 1024 * 1024;
 
 export type FileMime = 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
-function sniffMime(buf: Buffer): FileMime | null {
+export function sniffMime(buf: Buffer): FileMime | null {
   if (buf.length < 12) return null;
   if (buf.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
   if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
   if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (buf.subarray(0, 4).toString('latin1') === 'RIFF' && buf.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
   return null;
+}
+
+/** Grava um anexo do caso (mesmo pipeline da tela e da integração). Devolve o id ou null se o formato não for aceito. */
+export function storeCaseFile(caseId: number, buf: Buffer, filename: string | undefined): number | null {
+  const mime = sniffMime(buf);
+  if (!mime || buf.length > MAX_PDF) return null;
+  const ext = mime === 'application/pdf' ? 'pdf' : mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+  const stored = `${caseId}-${crypto.randomUUID()}.${ext}`;
+  fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
+  const original = path.basename(filename || `exames.${ext}`).slice(0, 120);
+  const info = getDb().prepare('INSERT INTO case_files(case_id, original_name, stored_name, size, mime) VALUES (?, ?, ?, ?, ?)').run(caseId, original, stored, buf.length, mime);
+  getDb().prepare("UPDATE cases SET updated_at = datetime('now') WHERE id = ?").run(caseId);
+  return Number(info.lastInsertRowid);
 }
 
 const CaseBody = z.object({
@@ -260,6 +273,17 @@ function brandHeader(): string {
   return `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid #e5e7eb;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${st.logo ? `<img src="/branding/logo?v=${h(st.logo)}" alt="${h(st.clinic_name)}" style="max-height:96px;max-width:260px">` : `<div style="font-weight:700;font-size:16px">${h(st.clinic_name)}</div>`}${st.clinic_info ? `<div style="font-size:12.5px;color:#6b7280">${h(st.clinic_info)}</div>` : ''}</div>`;
 }
 
+/** HTML de impressão de uma análise (mesmo da tela "Imprimir / PDF"). */
+export function printAnalysisHtml(c: CaseRow, row: Row, tipo: 'resumido' | 'tecnico', markdown: string): string {
+  const score = scoreFromRow(row);
+  let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
+  if (score) {
+    const { evals, derivedEvals } = evaluateCase(c, loadResults(c.id));
+    top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
+  }
+  return layout({ title: `Análise #${num(row, 'id')} (${tipo})`, user: null, body: brandHeader() + top + renderMarkdown(markdown), print: true });
+}
+
 const ConductItemBody = z.object({ kind: z.string().trim().default('outro'), title: z.string().trim().min(1).max(200), rationale: z.string().trim().max(3000).default(''), action: z.string().trim().default('salvar') });
 
 export async function casesRoutes(app: FastifyInstance): Promise<void> {
@@ -382,16 +406,11 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     let rejected = 0;
     for await (const part of request.files({ limits: { fileSize: MAX_PDF, files: 10 } })) {
       const buf = await part.toBuffer();
-      const mime = sniffMime(buf);
-      if (part.file.truncated || !mime) {
+      const fileId = part.file.truncated ? null : storeCaseFile(id, buf, part.filename);
+      if (fileId === null) {
         rejected += 1;
         continue;
       }
-      const ext = mime === 'application/pdf' ? 'pdf' : mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
-      const stored = `${id}-${crypto.randomUUID()}.${ext}`;
-      fs.writeFileSync(path.join(UPLOAD_DIR, stored), buf);
-      const original = path.basename(part.filename || `exames.${ext}`).slice(0, 120);
-      getDb().prepare('INSERT INTO case_files(case_id, original_name, stored_name, size, mime) VALUES (?, ?, ?, ?, ?)').run(id, original, stored, buf.length, mime);
       saved += 1;
     }
     audit(request.user?.id ?? null, 'upload', 'case', id, { saved, rejected }, request.id);
@@ -783,16 +802,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const c = loadCase(Number(id));
     const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
     if (!row || !c) return reply.code(404).send('Análise não encontrada');
-    const md = pickMarkdown(row, tipo);
-    const score = scoreFromRow(row);
     audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), { tipo }, request.id);
-    let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
-    if (score) {
-      const { evals, derivedEvals } = evaluateCase(c, loadResults(Number(id)));
-      top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
-    }
-    top = brandHeader() + top;
-    return reply.type('text/html; charset=utf-8').send(layout({ title: `Análise #${aid} (${tipo})`, user: request.user, body: top + renderMarkdown(md), print: true }));
+    return reply.type('text/html; charset=utf-8').send(printAnalysisHtml(c, row, tipo, pickMarkdown(row, tipo)));
   });
 
   app.get('/casos/:id/analises/:aid/download', async (request, reply) => {

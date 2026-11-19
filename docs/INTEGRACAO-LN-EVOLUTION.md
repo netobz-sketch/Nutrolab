@@ -6,8 +6,15 @@ em gráficos e no Relatório de Evolução. O navegador nunca fala com o NutroLa
 LN Evolution, pela rede interna do Docker (`http://nutrolab:8090`).
 
 ## Identidade do paciente
-O NutroLab continua pseudônimo: `cases.patient_code` recebe o **UUID do paciente no LN Evolution**.
-Casos antigos com outro código podem ser ligados informando esse código no LN Evolution.
+O `code` do paciente é o **id canônico do LN Medicina Integrada: `patients.id` (uuid) do clinica-api**.
+No NutroLab ele vive em `patients.code` e é copiado para `cases.patient_code`. `POST /cases` liga o caso ao
+paciente com esse `code` (cria o cadastro pseudônimo, com nome = code, se ainda não existir).
+Casos antigos com outro código podem ser religados informando esse código.
+
+## Versões
+- **v1** (nov/2026): leitura de casos, análises e marcadores; criação de caso.
+- **v2** (19/11/2026): `code` canônico documentado, envio de anexos e exportação do relatório final.
+  Tudo da v1 continua igual; v2 só acrescenta rotas.
 
 ## Nome do paciente
 `cases.patient_name` existe no NutroLab e aparece nos relatórios. A integração **nunca o devolve**: o DTO não tem o campo e
@@ -34,6 +41,14 @@ timestamps ISO. Limite: 120 req/min por token.
 - `GET /api/integration/analyses/:id` → `IntegrationAnalysis`
 - `GET /api/integration/patients/:code/markers?exams=a,b,c&limit=12` → `IntegrationMarkerSeries[]` (só análises finalizadas;
   sem `exams`, devolve os marcadores com ≥ 2 pontos, até 12 mais frequentes)
+- **v2** `POST /api/integration/cases/:id/files` (multipart/form-data, um arquivo PDF/JPG/PNG/WebP até 25 MB; o tipo é
+  detectado pelos bytes, não pela extensão) → `201 { data: { fileId } }`. Mesmo pipeline de anexos da tela (`case_files`);
+  a extração por IA continua sendo disparada no NutroLab. Erros: 400 sem arquivo/não multipart, 404 caso inexistente,
+  415 `UNSUPPORTED_FILE`. Auditoria `integ_upload_file`.
+- **v2** `GET /api/integration/analyses/:id/export?format=md|html&type=resumido|tecnico` (padrão `md` e `resumido`)
+  → o relatório **final** em `text/markdown` ou o HTML de impressão (o mesmo do botão "Imprimir / PDF", com logo e painel).
+  Só para análises finalizadas: minuta → `409 NOT_FINALIZED`. O nome do paciente é substituído pelo código
+  (`redactPatientName`). Parâmetro inválido → 400. Auditoria `integ_export_analysis`.
 
 ```
 IntegrationCase = { id, patientCode, status: 'aberto'|'revisado'|'arquivado', sex, birthDate, goal, createdAt, updatedAt,
