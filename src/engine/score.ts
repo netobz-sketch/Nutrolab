@@ -70,14 +70,14 @@ export function gaugeSvg(score: number | null, size = 220): string {
     const a = Math.PI * (1 - score / 100);
     const x = cx + (r - 2) * Math.cos(a);
     const y = cy - (r - 2) * Math.sin(a);
-    return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#16202a" stroke-width="4" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="7" fill="#16202a"/>`;
+    return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#111111" stroke-width="4" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="7" fill="#111111"/>`;
   })();
-  const color = score === null ? '#9aa6b2' : score >= 80 ? '#15803d' : score >= 60 ? '#b45309' : '#b91c1c';
+  const color = score === null ? '#a1a1aa' : score >= 80 ? '#2f7d4f' : score >= 60 ? '#8a6d1f' : '#8b2f2f';
   const label = score === null ? 'sem score' : String(score);
   return `<svg role="img" aria-label="Score ${label} de 100" viewBox="0 0 ${size} ${size / 2 + 40}" width="${size}" height="${size / 2 + 40}" style="max-width:100%;height:auto">
-${arc(0, 0.6, '#ef4444')}${arc(0.6, 0.8, '#f59e0b')}${arc(0.8, 1, '#22c55e')}
+${arc(0, 0.6, '#8b2f2f')}${arc(0.6, 0.8, '#8a6d1f')}${arc(0.8, 1, '#2f7d4f')}
 ${needle}
-<text x="${cx}" y="${cy + 34}" text-anchor="middle" font-family="Inter,system-ui,sans-serif" font-size="30" font-weight="700" fill="${color}">${label}</text>
-<text x="${cx}" y="${cy + 52}" text-anchor="middle" font-family="Inter,system-ui,sans-serif" font-size="11" fill="#6b7280">de 100</text>
+<text x="${cx}" y="${cy + 34}" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="30" font-weight="700" fill="${color}">${label}</text>
+<text x="${cx}" y="${cy + 52}" text-anchor="middle" font-family="Inter,ui-sans-serif,system-ui,sans-serif" font-size="11" fill="#71717a">de 100</text>
 </svg>`;
 }

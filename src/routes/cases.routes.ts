@@ -270,7 +270,7 @@ function brandHeader(): string {
   const st = reportSettings();
   if (!st.logo && !st.clinic_name) return '';
   // Com logo, a arte já traz o nome: mostra só a imagem e a linha de contato.
-  return `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid #e5e7eb;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${st.logo ? `<img src="/branding/logo?v=${h(st.logo)}" alt="${h(st.clinic_name)}" style="max-height:96px;max-width:260px">` : `<div style="font-weight:700;font-size:16px">${h(st.clinic_name)}</div>`}${st.clinic_info ? `<div style="font-size:12.5px;color:#6b7280">${h(st.clinic_info)}</div>` : ''}</div>`;
+  return `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 16px;padding-bottom:12px;border-bottom:1px solid #e5e5e7;font-family:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">${st.logo ? `<img src="/branding/logo?v=${h(st.logo)}" alt="${h(st.clinic_name)}" style="max-height:96px;max-width:260px">` : `<div style="font-weight:700;font-size:16px">${h(st.clinic_name)}</div>`}${st.clinic_info ? `<div style="font-size:12.5px;color:#71717a">${h(st.clinic_info)}</div>` : ''}</div>`;
 }
 
 /** HTML de impressão de uma análise (mesmo da tela "Imprimir / PDF"). */

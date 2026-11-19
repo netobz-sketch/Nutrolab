@@ -16,6 +16,7 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY --chown=node:node seed ./seed
 COPY --chown=node:node skill ./skill
+COPY --chown=node:node assets ./assets
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 8090

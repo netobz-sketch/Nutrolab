@@ -72,14 +72,14 @@ export function lineChart(points: Array<{ date: string; value: number; raw?: str
     const bottom = y(b[0] ?? lo);
     return `<rect x="${padL}" y="${Math.min(top, bottom).toFixed(1)}" width="${W - padL - padR}" height="${Math.abs(bottom - top).toFixed(1)}" fill="${color}"/>`;
   };
-  const color = opts.color ?? '#0d6b55';
+  const color = opts.color ?? '#111111';
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
   const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}" r="4" fill="${color}" stroke="#fff" stroke-width="1.5"><title>${h(fmt(p.date))}: ${h(p.raw ?? String(p.value))} ${h(opts.unit ?? '')}</title></circle>`).join('');
-  const labels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#6b7280">${fmt(p.date)}</text>`).join('');
-  const ticks = [lo + span * 0.1, (lo + hi) / 2, hi - span * 0.1].map((v) => `<text x="${padL - 6}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#6b7280">${Number.isInteger(v) ? v : v.toFixed(Math.abs(v) < 10 ? 1 : 0)}</text>`).join('');
+  const labels = points.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="#71717a">${fmt(p.date)}</text>`).join('');
+  const ticks = [lo + span * 0.1, (lo + hi) / 2, hi - span * 0.1].map((v) => `<text x="${padL - 6}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="#71717a">${Number.isInteger(v) ? v : v.toFixed(Math.abs(v) < 10 ? 1 : 0)}</text>`).join('');
   const last = points[points.length - 1];
   const lastLabel = last ? `<text x="${(x(points.length - 1) + 6).toFixed(1)}" y="${(y(last.value) - 6).toFixed(1)}" font-size="11" font-weight="700" fill="${color}">${h(last.raw ?? String(last.value))}</text>` : '';
-  return `<svg role="img" aria-label="Evolução" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;height:auto;font-family:Inter,system-ui,sans-serif">${band(opts.normal, 'rgba(245,158,11,0.14)')}${band(opts.optimal, 'rgba(34,197,94,0.22)')}<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#e5e7eb"/>${ticks}<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>${dots}${labels}${lastLabel}</svg>`;
+  return `<svg role="img" aria-label="Evolução" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;height:auto;font-family:Inter,system-ui,sans-serif">${band(opts.normal, 'rgba(138,109,31,0.12)')}${band(opts.optimal, 'rgba(47,125,79,0.16)')}<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#e5e5e7"/>${ticks}<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>${dots}${labels}${lastLabel}</svg>`;
 }
 
 export function evolutionHtml(series: Series[], scores: ReturnType<typeof scoreTimeline>): string {

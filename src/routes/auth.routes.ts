@@ -30,6 +30,15 @@ function safeNext(next: string | undefined): string {
 }
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  // Fonte Inter servida localmente (design LN), pública e imutável.
+  app.get('/assets/fonts/:file', async (request, reply) => {
+    const file = (request.params as { file: string }).file;
+    if (!/^[a-z0-9-]+\.woff2$/.test(file)) return reply.code(404).send('não encontrado');
+    const full = path.resolve('assets/fonts', file);
+    if (!fs.existsSync(full)) return reply.code(404).send('não encontrado');
+    return reply.type('font/woff2').header('Cache-Control', 'public, max-age=31536000, immutable').send(fs.readFileSync(full));
+  });
+
   // Logo da clínica: pública (aparece na tela de login).
   app.get('/branding/logo', async (_request, reply) => {
     const f = fs.readdirSync(BRAND_DIR).find((x) => x.startsWith('logo.'));

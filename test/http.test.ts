@@ -262,7 +262,7 @@ test('ajuste rápido das referências: ordem validada, barra renderizada, ativa�
   assert.equal(pageQ.statusCode, 200);
   assert.match(pageQ.body, /class="refrow"/);
   assert.match(pageQ.body, /aria-label="ótimo de"/);
-  assert.match(pageQ.body, /background:#22c55e/);
+  assert.match(pageQ.body, /background:#2f7d4f/);
   const bad = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '60', target_max: '50', normal_max: '100', critical_high: '150', status: 'ativo' });
   assert.match(bad.headers.location ?? '', /crescer%20da%20esquerda/);
   const okq = await post('/regras/1/rapido', { critical_low: '10', normal_min: '30', target_min: '40', target_max: '80', normal_max: '100', critical_high: '150', status: 'ativo' });
@@ -448,4 +448,15 @@ test('hormônios femininos: faixa por fase do ciclo; anticoncepcional combinado 
 test('sem GOTRUE_JWT_SECRET o Bearer é ignorado (nada muda)', async () => {
   const r = await app.inject({ method: 'GET', url: '/casos', headers: { ...H, authorization: 'Bearer a.b.c' } });
   assert.equal(r.statusCode, 302);
+});
+
+test('design LN: só tema claro, sem alternância, nome e fonte local', async () => {
+  const page = await get('/casos');
+  assert.match(page.body, /LN Medicina Integrada · Exames<\/title>/);
+  assert.match(page.body, /tokens LN v1\.0\.0|--ink-900:#111111/);
+  assert.doesNotMatch(page.body, /prefers-color-scheme|data-theme|nlToggleTheme/);
+  const font = await app.inject({ method: 'GET', url: '/assets/fonts/inter-latin-400-700.woff2', headers: H });
+  assert.equal(font.statusCode, 200);
+  assert.equal(font.headers['content-type'], 'font/woff2');
+  assert.equal((await app.inject({ method: 'GET', url: '/assets/fonts/..%2Fpackage.json', headers: H })).statusCode, 404);
 });

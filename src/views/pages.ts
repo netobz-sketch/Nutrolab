@@ -91,7 +91,7 @@ export function casesPage(cases: CaseRow[], tableVersion: string, aiOn: boolean)
   const rows = cases.map((c) => `<tr><td><a href="/casos/${c.id}" style="font-weight:600;text-decoration:none">${h(c.patient_code)}</a></td><td>${h(c.sex ?? '—')}</td><td>${fmtDate(c.last_collection)}</td><td class="num">${c.results_count ?? 0}</td><td class="num">${c.analyses_count ?? 0}</td><td>${statusTag(c.status)}</td><td class="muted">${fmtDate(c.created_at)}</td></tr>`).join('');
   const open = cases.filter((c) => c.status === 'aberto').length;
   const reviewed = cases.filter((c) => c.status === 'revisado').length;
-  return `<div class="pagehead"><div><div class="crumbs">NutroLab</div><h1>Casos</h1><div class="sub">Tabela clínica: ${h(tableVersion)}</div></div><a class="btn" href="/casos/novo">Novo caso</a></div>
+  return `<div class="pagehead"><div><div class="crumbs">LN Medicina Integrada · Exames</div><h1>Casos</h1><div class="sub">Tabela clínica: ${h(tableVersion)}</div></div><a class="btn" href="/casos/novo">Novo caso</a></div>
 ${tableVersion === 'sem regras ativas' ? '<div class="flash warn">A tabela clínica não tem regras ativas: os exames serão organizados, mas nenhum resultado será classificado. Ative regras em <a href="/regras">Regras</a>.</div>' : ''}
 ${aiOn ? '' : '<div class="flash warn">IA desligada (sem ANTHROPIC_API_KEY): leitura automática de PDF e redação ficam indisponíveis; o lançamento manual e o motor de regras funcionam normalmente.</div>'}
 <div class="kpis"><div class="kpi"><span class="k">Casos</span><span class="v">${cases.length}</span><span class="d">últimos 200</span></div><div class="kpi warn"><span class="k">Em aberto</span><span class="v">${open}</span><span class="d">aguardando revisão</span></div><div class="kpi ok"><span class="k">Revisados</span><span class="v">${reviewed}</span><span class="d">pelo médico</span></div></div>
@@ -407,11 +407,11 @@ export function bandBar(r: Rule, compact = false): string {
   const gL = greenL !== null ? pct(greenL) : amberL;
   const gR = greenR !== null ? pct(greenR) : 100;
   const amberR = b.nh !== null ? pct(b.nh) : gR;
-  segs.push([startRed, amberL, '#ef4444', 'crítico/baixo']);
-  segs.push([amberL, gL, '#f59e0b', 'normal baixo']);
-  segs.push([gL, gR, '#22c55e', 'ótimo']);
-  segs.push([gR, amberR, '#f59e0b', 'normal alto']);
-  segs.push([amberR, 100, '#ef4444', 'alto/crítico']);
+  segs.push([startRed, amberL, '#8b2f2f', 'crítico/baixo']);
+  segs.push([amberL, gL, '#8a6d1f', 'normal baixo']);
+  segs.push([gL, gR, '#2f7d4f', 'ótimo']);
+  segs.push([gR, amberR, '#8a6d1f', 'normal alto']);
+  segs.push([amberR, 100, '#8b2f2f', 'alto/crítico']);
   const bar = `<div style="display:flex;height:${compact ? 8 : 12}px;border-radius:6px;overflow:hidden">${segs.map(([a, c, color, title]) => `<div title="${title}" style="width:${Math.max(0, c - a)}%;background:${color}"></div>`).join('')}</div>`;
   if (compact) return `<div style="width:110px;flex:0 0 110px" aria-hidden="true">${bar}</div>`;
   const marks = [b.cl, b.nl, b.tl, b.th, b.nh, b.ch].map((v, i) => (v === null ? '' : `<span style="position:absolute;left:${pct(v)}%;top:14px;transform:translateX(-50%);font-size:10px;color:var(--muted);white-space:nowrap">${['c↓', 'n↓', 'ó↓', 'ó↑', 'n↑', 'c↑'][i]} ${v}</span>`)).join('');

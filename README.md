@@ -77,7 +77,7 @@ Stack: Node 22, TypeScript strict, Fastify 5, SQLite nativo, Zod 4, `@anthropic-
 ```bash
 npm install && cp .env.example .env     # ADMIN_EMAIL/ADMIN_PASSWORD criam o 1º admin
 npm run build && npm start               # http://localhost:8090
-npm test                                 # motor, HTTP, SSO e integração (58 testes)
+npm test                                 # motor, HTTP, SSO e integração (59 testes)
 ```
 
 ## Integração com o LN Evolution
