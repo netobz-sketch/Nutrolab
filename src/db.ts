@@ -1,4 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
+import { PgSyncDb, type Db } from './pg/sync.js';
+import { ensurePgSchema } from './pg/schema.js';
+
+export type { Db } from './pg/sync.js';
+
+/** Postgres quando DATABASE_URL existir; senão SQLite (padrão). */
+export function usingPostgres(): boolean {
+  return !!process.env.DATABASE_URL?.trim();
+}
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Guidance, Rule, Status } from './engine/types.js';
@@ -294,28 +303,51 @@ function migrate(database: DatabaseSync): void {
   database.exec(EXTRA_SCHEMA);
 }
 
-let db: DatabaseSync | null = null;
+let db: Db | null = null;
+let testResetDone = false;
 
-export function getDb(): DatabaseSync {
+export function getDb(): Db {
   if (!db) throw new Error('banco não inicializado');
   return db;
 }
 
-export function openDb(): DatabaseSync {
+export function openDb(): Db {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   fs.mkdirSync(BRAND_DIR, { recursive: true });
   fs.mkdirSync(FORMULARY_DIR, { recursive: true });
   fs.mkdirSync(CONSENT_DIR, { recursive: true });
-  db = new DatabaseSync(DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
-  db.exec('PRAGMA busy_timeout = 5000');
-  db.exec(SCHEMA);
-  migrate(db);
+  if (usingPostgres()) {
+    // Ponte síncrona TRANSITÓRIA para o Postgres (ver src/pg/sync.ts e docs/decisions.md):
+    // a refatoração da camada de acesso para async é tarefa futura.
+    const pgdb = new PgSyncDb(process.env.DATABASE_URL as string);
+    // Só em teste e uma vez por processo: cada arquivo de teste começa com o banco de ensaio vazio.
+    if (process.env.NODE_ENV === 'test' && process.env.NUTROLAB_TEST_RESET_PG === '1' && !testResetDone) {
+      pgdb.exec('DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;');
+      testResetDone = true;
+    }
+    ensurePgSchema(pgdb, schemaReference());
+    db = pgdb;
+  } else {
+    const sqlite = new DatabaseSync(DB_PATH);
+    sqlite.exec('PRAGMA journal_mode = WAL');
+    sqlite.exec('PRAGMA foreign_keys = ON');
+    sqlite.exec('PRAGMA busy_timeout = 5000');
+    sqlite.exec(SCHEMA);
+    migrate(sqlite);
+    db = sqlite as unknown as Db;
+  }
   seedDefaults(db);
   seedCatalog(db);
   backfillPatients(db);
   return db;
+}
+
+/** SQLite em memória com o schema completo: fonte única do DDL do Postgres. */
+export function schemaReference(): DatabaseSync {
+  const mem = new DatabaseSync(':memory:');
+  mem.exec(SCHEMA);
+  migrate(mem);
+  return mem;
 }
 
 export function rowToRule(row: Row): Rule {
@@ -423,7 +455,7 @@ export function parseCsv(text: string): Row[] {
   });
 }
 
-function seedDefaults(database: DatabaseSync): void {
+function seedDefaults(database: Db): void {
   const rulesCount = num(database.prepare('SELECT COUNT(*) AS n FROM rules').get() as Row, 'n');
   if (rulesCount === 0) {
     const seedPath = path.resolve('seed/valores-otimizados.csv');
@@ -669,7 +701,7 @@ const CATALOG: Array<[exam: string, aliases: string, system: string, unit: strin
   ['beta_hcg', 'Beta-HCG', 'outros', 'mUI/mL', null, 5],
 ];
 
-function seedCatalog(database: DatabaseSync): void {
+function seedCatalog(database: Db): void {
   const existing = new Set((database.prepare('SELECT DISTINCT exam_canonical FROM rules').all() as Row[]).map((r) => str(r, 'exam_canonical')));
   const insert = database.prepare(
     `INSERT INTO rules(exam_canonical, aliases, sex, contexts, unit, system, normal_min, normal_max, clinical_source, version, reviewed_at, status)
@@ -709,7 +741,7 @@ export function allFormulas(): Formula[] {
 }
 
 /** Casos antigos sem paciente: cria um paciente por código e vincula. */
-function backfillPatients(database: DatabaseSync): void {
+function backfillPatients(database: Db): void {
   const orphans = database.prepare('SELECT * FROM cases WHERE patient_id IS NULL AND deleted_at IS NULL ORDER BY id').all() as Row[];
   for (const c of orphans) {
     const code = str(c, 'patient_code') || `P-${String(num(c, 'id')).padStart(4, '0')}`;
