@@ -3,6 +3,7 @@ import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import { bootstrapAdmin, COOKIE_NAME, sessionUser } from './auth.js';
+import { userFromBearer } from './sso.js';
 import { aiEnabled, AI_MODEL } from './ai.js';
 import { openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
@@ -50,6 +51,15 @@ app.addHook('onRequest', async (request, reply) => {
     }
   }
   request.user = sessionUser(request.cookies[COOKIE_NAME]);
+  // SSO GoTrue (dual-accept): Bearer só é considerado quando não há sessão por cookie.
+  if (!request.user && !integration && request.headers.authorization) {
+    const sso = userFromBearer(request.headers.authorization);
+    if (sso && !sso.ok) {
+      request.log.warn({ reason: sso.reason }, 'sso recusado');
+      return reply.code(sso.status).type('application/json').send({ error: { code: sso.status === 401 ? 'unauthorized' : 'forbidden', message: sso.reason } });
+    }
+    if (sso?.ok) request.user = sso.user;
+  }
   reply.header('Cache-Control', 'no-store');
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');

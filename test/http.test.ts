@@ -11,6 +11,7 @@ process.env.ADMIN_NAME = 'Médica Teste';
 process.env.ADMIN_PASSWORD = 'senha-de-teste-123';
 process.env.NODE_ENV = 'test';
 delete process.env.ANTHROPIC_API_KEY;
+delete process.env.GOTRUE_JWT_SECRET;
 
 const { buildApp } = await import('../src/app.js');
 const { fakeDocx } = await import('./docx.test.js');
@@ -442,4 +443,9 @@ test('hormônios femininos: faixa por fase do ciclo; anticoncepcional combinado 
   const tech = await get(`/casos/${pilula.cid}/analises/${aid}/download?tipo=tecnico`);
   assert.match(tech.body, /anticoncepcional hormonal combinado/);
   assert.match(tech.body, /Contexto hormonal: fase do ciclo lutea · anticoncepcional combinado/);
+});
+
+test('sem GOTRUE_JWT_SECRET o Bearer é ignorado (nada muda)', async () => {
+  const r = await app.inject({ method: 'GET', url: '/casos', headers: { ...H, authorization: 'Bearer a.b.c' } });
+  assert.equal(r.statusCode, 302);
 });
