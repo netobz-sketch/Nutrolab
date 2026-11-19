@@ -18,7 +18,7 @@ if (!row) {
   process.exit(1);
 }
 getDb().prepare('UPDATE users SET disabled_at = NULL WHERE id = ?').run(num(row, 'id'));
-const { token, expiresAt } = createResetToken(num(row, 'id'), 'cli', null);
+const { token, expiresAt } = await createResetToken(num(row, 'id'), 'cli', null);
 getDb().prepare("INSERT INTO audit_log(user_id, action, entity, entity_id, details) VALUES (NULL, 'gerar_link_redefinicao_cli', 'user', ?, ?)").run(String(num(row, 'id')), JSON.stringify({ expiresAt }));
 const base = (process.env.APP_URL ?? 'http://localhost:8090').replace(/\/$/, '');
 console.log(`${base}/redefinir/${token}`);

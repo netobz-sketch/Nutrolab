@@ -431,7 +431,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const parsed = UserBody.safeParse(request.body);
     if (!parsed.success) return settings(request, reply, firstIssue(parsed.error));
     const u = parsed.data;
-    if (userExists(u.email)) return settings(request, reply, 'e-mail já cadastrado');
+    if (await userExists(u.email)) return settings(request, reply, 'e-mail já cadastrado');
     const cpf = u.cpf ? normalizeCpf(u.cpf) : null;
     if (u.cpf && !cpf) return settings(request, reply, 'CPF inválido');
     if (cpf && (getDb().prepare('SELECT 1 FROM users WHERE cpf = ?').get(cpf) as Row | undefined)) return settings(request, reply, 'CPF já cadastrado');
@@ -443,7 +443,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const id = Number((request.params as { id: string }).id);
     const row = getDb().prepare('SELECT email FROM users WHERE id = ? AND disabled_at IS NULL').get(id) as Row | undefined;
     if (!row) return settings(request, reply, 'usuário não encontrado ou desativado');
-    const { token, expiresAt } = createResetToken(id, 'admin', request.user?.id ?? null);
+    const { token, expiresAt } = await createResetToken(id, 'admin', request.user?.id ?? null);
     audit(request.user?.id ?? null, 'gerar_link_redefinicao', 'user', id, { expiresAt }, request.id);
     const base = appUrl() || `${request.protocol}://${request.hostname}`;
     return settings(request, reply, null, { email: str(row, 'email'), link: `${base}/redefinir/${token}`, expiresAt });

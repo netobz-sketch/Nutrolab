@@ -6,7 +6,7 @@
  */
 import crypto from 'node:crypto';
 import { findUserByEmail, findUserById, type SessionUser } from './auth.js';
-import { audit, getDb, num, type Row } from './db.js';
+import { audit, getAsyncDb, num, type Row } from './db.js';
 
 export function ssoEnabled(): boolean {
   return !!process.env.GOTRUE_JWT_SECRET?.trim();
@@ -53,7 +53,7 @@ export function verifyGotrueJwt(token: string, secret: string, nowSec = Math.flo
   return { claims };
 }
 
-export function userFromBearer(authorization: string | undefined): SsoResult | null {
+export async function userFromBearer(authorization: string | undefined): Promise<SsoResult | null> {
   const secret = process.env.GOTRUE_JWT_SECRET?.trim();
   if (!secret || !authorization) return null;
   const m = /^Bearer\s+(.+)$/i.exec(authorization.trim());
@@ -64,19 +64,19 @@ export function userFromBearer(authorization: string | undefined): SsoResult | n
   const lnRole = (v.claims.app_metadata?.role ?? '').toLowerCase();
   const mapped = ROLE_MAP[lnRole];
   // Usuário existente (ativo ou não) por e-mail, sem distinção de caixa.
-  const row = getDb().prepare('SELECT id, disabled_at FROM users WHERE lower(email) = ?').get(email) as Row | undefined;
+  const row = (await getAsyncDb().prepare('SELECT id, disabled_at FROM users WHERE lower(email) = ?').get(email)) as Row | undefined;
   if (row) {
     if (row.disabled_at) return { ok: false, status: 403, reason: 'usuário desativado' };
     if (!mapped) return { ok: false, status: 403, reason: `papel "${lnRole || 'vazio'}" sem acesso ao NutroLab` };
-    const user = findUserById(num(row, 'id'));
+    const user = await findUserById(num(row, 'id'));
     return user ? { ok: true, user } : { ok: false, status: 403, reason: 'usuário indisponível' };
   }
   if (!mapped) return { ok: false, status: 403, reason: `papel "${lnRole || 'vazio'}" sem acesso ao NutroLab` };
   const name = (v.claims.user_metadata?.full_name ?? v.claims.user_metadata?.name ?? email).slice(0, 120);
   // Senha inutilizável: quem entra por SSO não usa senha local até definir uma.
   const unusable = `sso:${crypto.randomBytes(16).toString('hex')}`;
-  const id = Number(getDb().prepare('INSERT INTO users(email, name, password_hash, role) VALUES (?, ?, ?, ?)').run(email, name, unusable, mapped).lastInsertRowid);
+  const id = Number((await getAsyncDb().prepare('INSERT INTO users(email, name, password_hash, role) VALUES (?, ?, ?, ?)').run(email, name, unusable, mapped)).lastInsertRowid);
   audit(id, 'sso_criar_usuario', 'user', id, { email, ln_role: lnRole, role: mapped, sub: v.claims.sub ?? null });
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
   return user ? { ok: true, user } : { ok: false, status: 403, reason: 'falha ao criar usuário' };
 }

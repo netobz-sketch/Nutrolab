@@ -26,7 +26,7 @@ await app.register(formbody);
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 10 } });
 
 openDb();
-bootstrapAdmin((msg) => app.log.warn(msg));
+await bootstrapAdmin((msg) => app.log.warn(msg));
 
 app.decorateRequest('user', null);
 
@@ -50,10 +50,10 @@ app.addHook('onRequest', async (request, reply) => {
       return reply.code(403).send('origem inválida');
     }
   }
-  request.user = sessionUser(request.cookies[COOKIE_NAME]);
+  request.user = await sessionUser(request.cookies[COOKIE_NAME]);
   // SSO GoTrue (dual-accept): Bearer só é considerado quando não há sessão por cookie.
   if (!request.user && !integration && request.headers.authorization) {
-    const sso = userFromBearer(request.headers.authorization);
+    const sso = await userFromBearer(request.headers.authorization);
     if (sso && !sso.ok) {
       request.log.warn({ reason: sso.reason }, 'sso recusado');
       return reply.code(sso.status).type('application/json').send({ error: { code: sso.status === 401 ? 'unauthorized' : 'forbidden', message: sso.reason } });

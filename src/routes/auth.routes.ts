@@ -69,7 +69,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!cpf) return render('CPF inválido.');
       who = cpf;
       next = parsed.data.next;
-      user = authenticateProfessional(cpf, normalizeCouncilNumber(parsed.data.council_number), parsed.data.password);
+      user = await authenticateProfessional(cpf, normalizeCouncilNumber(parsed.data.council_number), parsed.data.password);
       if (user && normalizeText(user.name) !== normalizeText(parsed.data.name)) {
         audit(user.id, 'login_falhou', 'user', user.id, { ip: request.ip, motivo: 'nome não confere' }, request.id);
         user = null;
@@ -79,7 +79,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) return render('Informe e-mail e senha válidos.');
       who = parsed.data.email.toLowerCase();
       next = parsed.data.next;
-      user = authenticate(parsed.data.email, parsed.data.password);
+      user = await authenticate(parsed.data.email, parsed.data.password);
     }
     if (!user) {
       audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: mode }, request.id);
@@ -122,7 +122,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (d.profession && d.profession !== 'medico' && d.profession !== 'nutricionista') return render('Profissão inválida.');
     const clash = getDb().prepare('SELECT id FROM users WHERE (email = ? OR (cpf IS NOT NULL AND cpf = ?)) AND id != ?').get(d.email, cpf, user.id) as Row | undefined;
     if (clash) return render('E-mail ou CPF já usado por outro usuário.');
-    updateProfile(user.id, { name: d.name, email: d.email, cpf, council: d.council || null, council_number: d.council_number ? normalizeCouncilNumber(d.council_number) : null, council_state: d.council_state || null, profession: d.profession || null });
+    await updateProfile(user.id, { name: d.name, email: d.email, cpf, council: d.council || null, council_number: d.council_number ? normalizeCouncilNumber(d.council_number) : null, council_state: d.council_state || null, profession: d.profession || null });
     audit(user.id, 'editar_perfil', 'user', user.id, { cpf: !!cpf, council: d.council, council_number: !!d.council_number }, request.id);
     return reply.redirect('/perfil?kind=ok&msg=' + encodeURIComponent('Cadastro atualizado.'));
   });
@@ -141,11 +141,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const parsed = PasswordBody.safeParse(request.body);
     const render = (msg: string | null, ok = false) => reply.type('text/html; charset=utf-8').send(layout({ title: 'Alterar senha', user, body: passwordForm(msg, ok) }));
     if (!parsed.success) return render(parsed.error.issues[0]?.message ?? 'Dados inválidos.');
-    if (!authenticate(user.email, parsed.data.current)) return render('Senha atual incorreta.');
-    setPassword(user.id, parsed.data.password);
+    if (!await authenticate(user.email, parsed.data.current)) return render('Senha atual incorreta.');
+    await setPassword(user.id, parsed.data.password);
     audit(user.id, 'alterar_senha', 'user', user.id, null, request.id);
     // nova sessão para este aparelho; as outras sessões caem porque a versão da senha mudou
-    const fresh = findUserById(user.id);
+    const fresh = await findUserById(user.id);
     if (fresh) reply.setCookie(COOKIE_NAME, createSessionToken(fresh), { path: '/', httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 12 * 3600 });
     return render(null, true);
   });
@@ -157,9 +157,9 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const done = 'Se este e-mail estiver cadastrado, você receberá um link válido por 1 hora. Confira também a caixa de spam.';
     if (!mailEnabled()) return reply.type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage(null, false) }));
     if (!resetAllowed(request.ip)) return reply.code(429).type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage('Muitas tentativas. Aguarde 15 minutos.', true) }));
-    const user = email ? findUserByEmail(email) : null;
+    const user = email ? await findUserByEmail(email) : null;
     if (user) {
-      const { token } = createResetToken(user.id, 'email', null);
+      const { token } = await createResetToken(user.id, 'email', null);
       try {
         await sendResetEmail(user.email, `${appUrl()}/redefinir/${token}`);
         audit(user.id, 'reset_email', 'user', user.id, { ip: request.ip }, request.id);
@@ -174,13 +174,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/redefinir/:token', async (request, reply) => {
     const { token } = request.params as { token: string };
-    const reset = findValidReset(token);
+    const reset = await findValidReset(token);
     return reply.code(reset ? 200 : 404).type('text/html; charset=utf-8').send(layout({ title: 'Redefinir senha', user: null, body: resetPage(token, reset ? null : 'Link inválido, já usado ou vencido. Peça um novo ao administrador.', !reset) }));
   });
 
   app.post('/redefinir/:token', async (request, reply) => {
     const { token } = request.params as { token: string };
-    const reset = findValidReset(token);
+    const reset = await findValidReset(token);
     const render = (msg: string | null, dead = false, code = 200) => reply.code(code).type('text/html; charset=utf-8').send(layout({ title: 'Redefinir senha', user: null, body: resetPage(token, msg, dead) }));
     if (!reset) return render('Link inválido, já usado ou vencido. Peça um novo ao administrador.', true, 404);
     const body = request.body as { password?: string; confirm?: string } | null;
@@ -189,10 +189,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (password !== body?.confirm) return render('A confirmação não confere.');
     const row = getDb().prepare('SELECT email FROM users WHERE id = ? AND disabled_at IS NULL').get(reset.userId) as Row | undefined;
     if (!row) return render('Usuário desativado.', true, 404);
-    setPassword(reset.userId, password);
-    consumeReset(reset.id);
+    await setPassword(reset.userId, password);
+    await consumeReset(reset.id);
     audit(reset.userId, 'redefinir_senha', 'user', reset.userId, { ip: request.ip }, request.id);
-    const user = findUserById(reset.userId);
+    const user = await findUserById(reset.userId);
     if (user) {
       reply.setCookie(COOKIE_NAME, createSessionToken(user), { path: '/', httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 12 * 3600 });
     }

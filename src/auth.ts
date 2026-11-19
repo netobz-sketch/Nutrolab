@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { getDb, num, str, strOrNull, type Row } from './db.js';
+import { getAsyncDb, num, str, strOrNull, type Row } from './db.js';
 
 export interface SessionUser {
   id: number;
@@ -83,14 +83,14 @@ function rowToUser(row: Row): SessionUser {
   };
 }
 
-export function findUserById(id: number): SessionUser | null {
-  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE id = ? AND disabled_at IS NULL`).get(id) as Row | undefined;
+export async function findUserById(id: number): Promise<SessionUser | null> {
+  const row = (await getAsyncDb().prepare(`SELECT ${USER_COLS} FROM users WHERE id = ? AND disabled_at IS NULL`).get(id)) as Row | undefined;
   return row ? rowToUser(row) : null;
 }
 
 /** Login profissional: CPF + número do conselho identificam; a senha autentica. */
-export function authenticateProfessional(cpf: string, councilNumber: string, password: string): SessionUser | null {
-  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE cpf = ? AND council_number = ? AND disabled_at IS NULL`).get(cpf, councilNumber) as Row | undefined;
+export async function authenticateProfessional(cpf: string, councilNumber: string, password: string): Promise<SessionUser | null> {
+  const row = (await getAsyncDb().prepare(`SELECT ${USER_COLS} FROM users WHERE cpf = ? AND council_number = ? AND disabled_at IS NULL`).get(cpf, councilNumber)) as Row | undefined;
   if (!row) {
     verifyPassword(password, 'scrypt:00:00');
     return null;
@@ -99,27 +99,27 @@ export function authenticateProfessional(cpf: string, councilNumber: string, pas
   return rowToUser(row);
 }
 
-export function updateProfile(userId: number, data: { name: string; email: string; cpf: string | null; council: string | null; council_number: string | null; council_state: string | null; profession: string | null }): void {
-  getDb()
+export async function updateProfile(userId: number, data: { name: string; email: string; cpf: string | null; council: string | null; council_number: string | null; council_state: string | null; profession: string | null }): Promise<void> {
+  (await getAsyncDb()
     .prepare('UPDATE users SET name = ?, email = ?, cpf = ?, council = ?, council_number = ?, council_state = ?, profession = ? WHERE id = ?')
-    .run(data.name, data.email, data.cpf, data.council, data.council_number, data.council_state, data.profession, userId);
+    .run(data.name, data.email, data.cpf, data.council, data.council_number, data.council_state, data.profession, userId));
 }
 
 /** Usuário da sessão: só vale se a versão da senha ainda for a mesma. */
-export function sessionUser(token: string | undefined): SessionUser | null {
+export async function sessionUser(token: string | undefined): Promise<SessionUser | null> {
   const session = readSessionToken(token);
   if (!session) return null;
-  const user = findUserById(session.userId);
+  const user = await findUserById(session.userId);
   return user && user.pwv === session.pwv ? user : null;
 }
 
-export function findUserByEmail(email: string): SessionUser | null {
-  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase()) as Row | undefined;
+export async function findUserByEmail(email: string): Promise<SessionUser | null> {
+  const row = (await getAsyncDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase())) as Row | undefined;
   return row ? rowToUser(row) : null;
 }
 
-export function setPassword(userId: number, password: string): void {
-  getDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId);
+export async function setPassword(userId: number, password: string): Promise<void> {
+  (await getAsyncDb().prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), userId));
 }
 
 /* ------------------------------------------------- redefinição de senha */
@@ -131,26 +131,26 @@ function hashToken(token: string): string {
 }
 
 /** Cria token de uso único; devolve o token em claro (só aparece uma vez). */
-export function createResetToken(userId: number, channel: ResetChannel, createdBy: number | null): { token: string; expiresAt: string } {
+export async function createResetToken(userId: number, channel: ResetChannel, createdBy: number | null): Promise<{ token: string; expiresAt: string }> {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = new Date(Date.now() + RESET_HOURS[channel] * 3600 * 1000).toISOString();
-  getDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId);
-  getDb().prepare('INSERT INTO password_resets(user_id, token_hash, expires_at, created_by, channel) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), expiresAt, createdBy, channel);
+  (await getAsyncDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE user_id = ? AND used_at IS NULL").run(userId));
+  (await getAsyncDb().prepare('INSERT INTO password_resets(user_id, token_hash, expires_at, created_by, channel) VALUES (?, ?, ?, ?, ?)').run(userId, hashToken(token), expiresAt, createdBy, channel));
   return { token, expiresAt };
 }
 
-export function findValidReset(token: string): { id: number; userId: number } | null {
+export async function findValidReset(token: string): Promise<{ id: number; userId: number } | null> {
   if (!token || token.length < 20) return null;
-  const row = getDb().prepare("SELECT id, user_id FROM password_resets WHERE token_hash = ? AND used_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')").get(hashToken(token)) as Row | undefined;
+  const row = (await getAsyncDb().prepare("SELECT id, user_id FROM password_resets WHERE token_hash = ? AND used_at IS NULL AND expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')").get(hashToken(token))) as Row | undefined;
   return row ? { id: num(row, 'id'), userId: num(row, 'user_id') } : null;
 }
 
-export function consumeReset(id: number): void {
-  getDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE id = ?").run(id);
+export async function consumeReset(id: number): Promise<void> {
+  (await getAsyncDb().prepare("UPDATE password_resets SET used_at = datetime('now') WHERE id = ?").run(id));
 }
 
-export function authenticate(email: string, password: string): SessionUser | null {
-  const row = getDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase()) as Row | undefined;
+export async function authenticate(email: string, password: string): Promise<SessionUser | null> {
+  const row = (await getAsyncDb().prepare(`SELECT ${USER_COLS} FROM users WHERE email = ? AND disabled_at IS NULL`).get(email.trim().toLowerCase())) as Row | undefined;
   if (!row) {
     // custo constante mesmo sem usuário
     verifyPassword(password, 'scrypt:00:00');
@@ -161,8 +161,8 @@ export function authenticate(email: string, password: string): SessionUser | nul
 }
 
 /** Cria o primeiro administrador a partir do ambiente quando não há usuários. */
-export function bootstrapAdmin(log: (msg: string) => void): void {
-  const count = num(getDb().prepare('SELECT COUNT(*) AS n FROM users').get() as Row, 'n');
+export async function bootstrapAdmin(log: (msg: string) => void): Promise<void> {
+  const count = num((await getAsyncDb().prepare('SELECT COUNT(*) AS n FROM users').get()) as Row, 'n');
   if (count > 0) return;
   const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD;
@@ -170,18 +170,18 @@ export function bootstrapAdmin(log: (msg: string) => void): void {
     log('Nenhum usuário cadastrado e ADMIN_EMAIL/ADMIN_PASSWORD ausentes: ninguém conseguirá entrar.');
     return;
   }
-  getDb()
+  (await getAsyncDb()
     .prepare("INSERT INTO users(email, name, password_hash, role) VALUES (?, ?, ?, 'admin')")
-    .run(email, process.env.ADMIN_NAME?.trim() || 'Administrador', hashPassword(password));
+    .run(email, process.env.ADMIN_NAME?.trim() || 'Administrador', hashPassword(password)));
   log(`Administrador inicial criado: ${email}`);
 }
 
-export function userExists(email: string): boolean {
-  return !!(getDb().prepare('SELECT 1 FROM users WHERE email = ?').get(email) as Row | undefined);
+export async function userExists(email: string): Promise<boolean> {
+  return !!((await getAsyncDb().prepare('SELECT 1 FROM users WHERE email = ?').get(email)) as Row | undefined);
 }
 
-export function lastLoginAt(userId: number): string | null {
-  const row = getDb().prepare("SELECT created_at FROM audit_log WHERE user_id = ? AND action = 'login' ORDER BY id DESC LIMIT 1 OFFSET 1").get(userId) as Row | undefined;
+export async function lastLoginAt(userId: number): Promise<string | null> {
+  const row = (await getAsyncDb().prepare("SELECT created_at FROM audit_log WHERE user_id = ? AND action = 'login' ORDER BY id DESC LIMIT 1 OFFSET 1").get(userId)) as Row | undefined;
   return row ? strOrNull(row, 'created_at') : null;
 }
 
