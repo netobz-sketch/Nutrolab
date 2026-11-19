@@ -460,3 +460,14 @@ test('design LN: só tema claro, sem alternância, nome e fonte local', async ()
   assert.equal(font.headers['content-type'], 'font/woff2');
   assert.equal((await app.inject({ method: 'GET', url: '/assets/fonts/..%2Fpackage.json', headers: H })).statusCode, 404);
 });
+
+test('tradução de dialeto SQLite → Postgres', async () => {
+  const { translate, numberPlaceholders } = await import('../src/pg/translate.js');
+  assert.equal(numberPlaceholders("SELECT * FROM t WHERE a = ? AND b = '?' AND c = ?").text, "SELECT * FROM t WHERE a = $1 AND b = '?' AND c = $2");
+  const t = translate("INSERT INTO cases(a, updated_at) VALUES (?, datetime('now'))");
+  assert.match(t.text, /VALUES \(\$1, to_char\(now\(\) at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS'\)\) RETURNING id$/);
+  assert.equal(t.isInsert, true);
+  assert.doesNotMatch(translate("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").text, /RETURNING/);
+  assert.match(translate('SELECT id FROM x WHERE id != IFNULL(?, -1) AND n LIKE ?').text, /COALESCE\(\$1, -1\) AND n ILIKE \$2/);
+  assert.match(translate("SELECT 1 WHERE e > strftime('%Y-%m-%dT%H:%M:%fZ','now')").text, /"T"HH24:MI:SS\.MS"Z"/);
+});
