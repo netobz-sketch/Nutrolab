@@ -3,7 +3,7 @@
  * faixa normal/ótima da regra ativa ao fundo, e a linha do tempo do score.
  * Só desenha: valores vêm do motor (parseValue) e das análises gravadas.
  */
-import { allRules, getDb, num, str, strOrNull, type Row } from './db.js';
+import { allRules, getAsyncDb, num, str, strOrNull, type Row } from './db.js';
 import { matchExam, parseValue, SYSTEMS, selectRule } from './engine/index.js';
 import type { PatientProfile, Rule } from './engine/index.js';
 import { h } from './views/html.js';
@@ -11,10 +11,10 @@ import { h } from './views/html.js';
 export interface SeriesPoint { date: string; value: number; raw: string; caseId: number }
 export interface Series { key: string; label: string; unit: string; system: string; points: SeriesPoint[]; rule: Rule | null }
 
-export function patientSeries(patientId: number, profile: PatientProfile): Series[] {
-  const rows = getDb()
+export async function patientSeries(patientId: number, profile: PatientProfile): Promise<Series[]> {
+  const rows = (await getAsyncDb()
     .prepare(`SELECT r.*, c.id AS case_id FROM results r JOIN cases c ON c.id = r.case_id WHERE c.patient_id = ? AND c.deleted_at IS NULL AND r.excluded = 0 AND r.collection_date IS NOT NULL ORDER BY r.collection_date, r.id`)
-    .all(patientId) as Row[];
+    .all(patientId)) as Row[];
   const rules = allRules();
   const map = new Map<string, Series>();
   for (const r of rows) {
@@ -36,10 +36,10 @@ export function patientSeries(patientId: number, profile: PatientProfile): Serie
   return [...map.values()].filter((s) => s.points.length >= 2).sort((a, b) => (SYSTEMS[a.system] ?? a.system).localeCompare(SYSTEMS[b.system] ?? b.system, 'pt-BR') || a.label.localeCompare(b.label));
 }
 
-export function scoreTimeline(patientId: number): Array<{ date: string; score: number; caseId: number; analysisId: number }> {
-  const rows = getDb()
+export async function scoreTimeline(patientId: number): Promise<Array<{ date: string; score: number; caseId: number; analysisId: number }>> {
+  const rows = (await getAsyncDb()
     .prepare(`SELECT a.id, a.case_id, a.score, a.created_at FROM analyses a JOIN cases c ON c.id = a.case_id WHERE c.patient_id = ? AND c.deleted_at IS NULL AND a.score IS NOT NULL AND a.id = (SELECT MAX(id) FROM analyses a2 WHERE a2.case_id = a.case_id AND a2.score IS NOT NULL) ORDER BY a.created_at`)
-    .all(patientId) as Row[];
+    .all(patientId)) as Row[];
   return rows.map((r) => ({ date: str(r, 'created_at').slice(0, 10), score: num(r, 'score'), caseId: num(r, 'case_id'), analysisId: num(r, 'id') }));
 }
 
@@ -82,7 +82,7 @@ export function lineChart(points: Array<{ date: string; value: number; raw?: str
   return `<svg role="img" aria-label="Evolução" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" style="max-width:100%;height:auto;font-family:Inter,system-ui,sans-serif">${band(opts.normal, 'rgba(138,109,31,0.12)')}${band(opts.optimal, 'rgba(47,125,79,0.16)')}<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#e5e5e7"/>${ticks}<path d="${path}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>${dots}${labels}${lastLabel}</svg>`;
 }
 
-export function evolutionHtml(series: Series[], scores: ReturnType<typeof scoreTimeline>): string {
+export function evolutionHtml(series: Series[], scores: Awaited<ReturnType<typeof scoreTimeline>>): string {
   const scoreBlock = scores.length >= 1
     ? `<div class="card"><h2 style="margin-top:0">Score ao longo do tempo</h2>${scores.length >= 2 ? lineChart(scores.map((s) => ({ date: s.date, value: s.score, raw: String(s.score) })), { yMin: 0, yMax: 100, optimal: [80, 100], normal: [60, 80], width: 520, height: 150 }) : `<div class="muted small">Um único score registrado (${scores[0]?.score}); a linha aparece a partir da segunda análise.</div>`}</div>`
     : '';
@@ -100,12 +100,12 @@ export function evolutionHtml(series: Series[], scores: ReturnType<typeof scoreT
 }
 
 /** Último valor anterior de cada exame do paciente antes da coleta mais antiga deste caso. */
-export function previousValues(patientId: number | null, caseId: number): Map<string, { raw: string; unit: string; date: string }> {
+export async function previousValues(patientId: number | null, caseId: number): Promise<Map<string, { raw: string; unit: string; date: string }>> {
   const out = new Map<string, { raw: string; unit: string; date: string }>();
   if (!patientId) return out;
-  const rows = getDb()
+  const rows = (await getAsyncDb()
     .prepare(`SELECT r.exam_canonical, r.exam_raw, r.value_raw, r.unit_raw, r.collection_date FROM results r JOIN cases c ON c.id = r.case_id WHERE c.patient_id = ? AND c.id != ? AND c.deleted_at IS NULL AND r.excluded = 0 AND r.collection_date IS NOT NULL ORDER BY r.collection_date DESC`)
-    .all(patientId, caseId) as Row[];
+    .all(patientId, caseId)) as Row[];
   const rules = allRules();
   for (const r of rows) {
     const k = strOrNull(r, 'exam_canonical') ?? matchExam(str(r, 'exam_raw'), rules);

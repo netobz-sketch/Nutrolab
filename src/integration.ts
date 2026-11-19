@@ -600,6 +600,6 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     record(request, 'export_analysis', 'analysis', a.id, { patient_code: c.patient_code, format, type });
     if (format === 'md') return reply.type('text/markdown; charset=utf-8').send(markdown);
     const row = (await getAsyncDb().prepare('SELECT * FROM analyses WHERE id = ?').get(a.id)) as Row;
-    return reply.type('text/html; charset=utf-8').send(printAnalysisHtml(c, row, type, markdown));
+    return reply.type('text/html; charset=utf-8').send(await printAnalysisHtml(c, row, type, markdown));
   });
 }

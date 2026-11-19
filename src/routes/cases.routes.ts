@@ -274,12 +274,12 @@ function brandHeader(): string {
 }
 
 /** HTML de impressão de uma análise (mesmo da tela "Imprimir / PDF"). */
-export function printAnalysisHtml(c: CaseRow, row: Row, tipo: 'resumido' | 'tecnico', markdown: string): string {
+export async function printAnalysisHtml(c: CaseRow, row: Row, tipo: 'resumido' | 'tecnico', markdown: string): Promise<string> {
   const score = scoreFromRow(row);
   let top = `<div style="text-align:center;margin:8px 0 18px">${gaugeSvg(score?.total ?? null, 220)}</div>`;
   if (score) {
     const { evals, derivedEvals } = evaluateCase(c, loadResults(c.id));
-    top = patientVisualPanel(score, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
+    top = patientVisualPanel(score, [...evals, ...derivedEvals], await previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals));
   }
   return layout({ title: `Análise #${num(row, 'id')} (${tipo})`, user: null, body: brandHeader() + top + renderMarkdown(markdown), print: true });
 }
@@ -305,23 +305,23 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/casos/novo', async (request, reply) => {
     const pid = Number((request.query as { paciente?: string }).paciente ?? 0) || null;
-    const p = pid ? loadPatient(pid) : null;
+    const p = pid ? await loadPatient(pid) : null;
     let prefill: CaseRow | null = null;
     if (p) {
       const last = getDb().prepare('SELECT * FROM cases WHERE patient_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1').get(p.id) as Row | undefined;
       const base = last ? rowToCase(last) : null;
       prefill = { id: 0, patient_id: p.id, cycle_phase: '', contraceptive: base?.contraceptive ?? '', hrt: base?.hrt ?? '', patient_code: p.code, patient_name: p.name, complaints: base?.complaints ?? [], menopause: base?.menopause ?? '', ai_notes: '', doctor_notes: '', sex: p.sex, birth_date: p.birth_date, contexts: base?.contexts ?? [], medications: p.medications || base?.medications || '', supplements: p.supplements || base?.supplements || '', comorbidities: p.comorbidities || base?.comorbidities || '', goal: p.goal || base?.goal || '', notes: '', status: 'aberto', created_at: '' };
     }
-    const body = caseFormPage(prefill, null, allPatients(), p?.id ?? null).replace('action="/casos/0/editar"', 'action="/casos"');
+    const body = caseFormPage(prefill, null, await allPatients(), p?.id ?? null).replace('action="/casos/0/editar"', 'action="/casos"');
     return page(request, reply, 'Novo caso', body, p && p.consent_status !== 'assinado' ? { kind: 'warn', text: 'Este paciente ainda não tem consentimento LGPD registrado como assinado.' } : null);
   });
 
   app.post('/casos', async (request, reply) => {
     const parsed = CaseBody.safeParse(request.body);
-    if (!parsed.success) return page(request, reply, 'Novo caso', caseFormPage(null, parsed.error.issues[0]?.message ?? 'Dados inválidos.', allPatients(), null));
+    if (!parsed.success) return page(request, reply, 'Novo caso', caseFormPage(null, parsed.error.issues[0]?.message ?? 'Dados inválidos.', await allPatients(), null));
     const d = parsed.data;
     // paciente: existente ou criado a partir do nome
-    let patient: Patient | null = d.patient_id ? loadPatient(Number(d.patient_id)) : null;
+    let patient: Patient | null = d.patient_id ? await loadPatient(Number(d.patient_id)) : null;
     if (!patient) {
       const code = d.patient_code || nextCode();
       const name = d.patient_name.trim() || `Paciente ${code}`;
@@ -329,7 +329,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
       if (existing) patient = rowToPatient(existing);
       else {
         const pid = Number(getDb().prepare('INSERT INTO patients(code, name, birth_date, sex, comorbidities, medications, supplements, goal, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(code, name, d.birth_date || null, d.sex || null, d.comorbidities, d.medications, d.supplements, d.goal, request.user?.id ?? null).lastInsertRowid);
-        patient = loadPatient(pid);
+        patient = await loadPatient(pid);
         audit(request.user?.id ?? null, 'criar', 'patient', pid, { code, via: 'caso' }, request.id);
       }
     }
@@ -579,7 +579,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     if (!analysis) return reply.code(404).send('Análise não encontrada');
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
-    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals)) : '');
+    const panel = brandHeader() + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], await previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals)) : '');
     return page(request, reply, `Análise #${aid}`, analysisPage({
       c, analysis, score: storedScore,
       patientHtml: panel + renderMarkdown(str(row, 'markdown_patient') || str(row, 'markdown')),
@@ -803,7 +803,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const row = c ? loadAnalysis(Number(id), Number(aid)) : null;
     if (!row || !c) return reply.code(404).send('Análise não encontrada');
     audit(request.user?.id ?? null, 'imprimir_analise', 'analysis', Number(aid), { tipo }, request.id);
-    return reply.type('text/html; charset=utf-8').send(printAnalysisHtml(c, row, tipo, pickMarkdown(row, tipo)));
+    return reply.type('text/html; charset=utf-8').send(await printAnalysisHtml(c, row, tipo, pickMarkdown(row, tipo)));
   });
 
   app.get('/casos/:id/analises/:aid/download', async (request, reply) => {
