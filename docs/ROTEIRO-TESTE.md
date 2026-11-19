@@ -23,6 +23,10 @@ Endereço: https://nutrolab.srv2086528.hstgr.cloud
 - [ ] A senha única se troca no acesso inicial da clínica, não no NutroLab. **Meu cadastro → Trocar
       senha** e "Esqueci a senha" mudam só a senha local, usada no login profissional e quando o
       acesso inicial estiver fora do ar. Mantenha essa senha local forte e guardada.
+- [ ] **Logo depois da atualização da senha única:** quando o Claude avisar que publicou, entre no
+      NutroLab com seu e-mail e a senha única e diga se entrou. Se aparecer "Seu perfil não tem
+      acesso" ou "E-mail ou senha incorretos" com a senha certa, avise na hora: o Claude volta a
+      versão anterior em segundos e você continua entrando com a senha antiga do NutroLab.
 - [ ] **Login único com o LN Evolution:** quando o LN publicar o login único, entrar no LN deve
       bastar para abrir o NutroLab sem pedir senha de novo. Até lá, este item fica pendente.
 
