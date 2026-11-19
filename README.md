@@ -1,4 +1,7 @@
-# NutroLab
+# NutroLab · LN Medicina Integrada · Exames
+
+Serviço de registro e análise de exames (regras, análises, conduta) dentro do sistema **LN Medicina Integrada**.
+Na interface: "LN Medicina Integrada · Exames". Login único via GoTrue (Bearer JWT) além da sessão local.
 
 Sistema web para análise de exames em nutrologia. O médico cadastra **exames e referências**
 (normalidade, alvo ótimo, limites críticos), **orientações** e um **banco de fórmulas e
@@ -60,7 +63,9 @@ src/engine/   motor puro: normalize, units, rules, derived, score (testado)
 src/ai.ts     Anthropic: extração (PDF/imagem), relatórios, conduta (2 passos), fórmulas
 src/report.ts relatórios resumido e técnico (Markdown)   src/visuals.ts painel visual
 src/routes/   auth, casos, config (exames, orientações, fórmulas, relatórios, usuários)
-src/views/    HTML renderizado no servidor (tema claro/escuro)
+src/views/    HTML renderizado no servidor (design LN, só tema claro)
+src/sso.ts    login único: Bearer JWT do GoTrue (GOTRUE_JWT_SECRET)
+src/integration.ts  API servidor a servidor (v1 + v2), ver docs/INTEGRACAO-LN-EVOLUTION.md
 scripts/      backup do SQLite, reset de senha
 seed/ skill/  regras de exemplo e a skill original      deploy/  compose, Caddy, script da VPS
 ```
@@ -72,7 +77,7 @@ Stack: Node 22, TypeScript strict, Fastify 5, SQLite nativo, Zod 4, `@anthropic-
 ```bash
 npm install && cp .env.example .env     # ADMIN_EMAIL/ADMIN_PASSWORD criam o 1º admin
 npm run build && npm start               # http://localhost:8090
-npm test                                 # motor + integração HTTP (33 testes)
+npm test                                 # motor, HTTP, SSO e integração (58 testes)
 ```
 
 ## Integração com o LN Evolution
