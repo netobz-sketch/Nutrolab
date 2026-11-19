@@ -36,7 +36,7 @@ function replySync(message: unknown): void {
   Atomics.notify(flag, 0);
 }
 
-type Msg = { id?: number; text: string; params: unknown[]; mode: 'query' | 'exec' };
+type Msg = { seq: number; id?: number; text: string; params: unknown[]; mode: 'query' | 'exec' };
 type Reply = { ok: true; rows: unknown[]; rowCount: number } | { ok: false; message: string; code: string | null };
 
 async function run(msg: Msg): Promise<Reply> {
@@ -60,16 +60,24 @@ async function run(msg: Msg): Promise<Reply> {
   }
 }
 
-// Fila única para os dois canais: uma consulta por vez, na ordem de chegada
-// (a conexão é uma só; BEGIN/COMMIT e a ordem ficam iguais às do SQLite).
+// Fila única para os dois canais, na ORDEM EM QUE O PROCESSO PRINCIPAL EMITIU (seq):
+// mensagens de portas diferentes podem chegar trocadas; aqui ficam em espera até a vez delas.
+// A conexão é uma só; BEGIN/COMMIT e a ordem ficam iguais às do SQLite.
 let queue: Promise<unknown> = Promise.resolve();
-function enqueue(job: () => Promise<void>): void {
-  queue = queue.then(job, job);
+let expected = 1;
+const waiting = new Map<number, () => Promise<void>>();
+function arrive(seq: number, job: () => Promise<void>): void {
+  waiting.set(seq, job);
+  while (waiting.has(expected)) {
+    const next = waiting.get(expected) as () => Promise<void>;
+    waiting.delete(expected);
+    expected += 1;
+    queue = queue.then(next, next);
+  }
 }
 
-port.on('message', (msg: Msg) => enqueue(async () => replySync(await run(msg))));
-asyncPort.on('message', (msg: Msg) => enqueue(async () => {
+port.on('message', (msg: Msg) => arrive(msg.seq, async () => replySync(await run(msg))));
+asyncPort.on('message', (msg: Msg) => arrive(msg.seq, async () => {
   const r = await run(msg);
   asyncPort.postMessage({ id: msg.id, ...r });
 }));
-parentPort?.postMessage('ready');

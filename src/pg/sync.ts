@@ -66,6 +66,8 @@ export class PgSyncDb implements Db {
   // Canal assíncrono: mesma conexão do worker, respostas casadas por id.
   private readonly asyncPort;
   private nextId = 1;
+  // Número de ordem global (síncrono e assíncrono): o worker executa estritamente nessa ordem.
+  private seq = 0;
   private readonly pending = new Map<number, { resolve: (v: { rows: Row[]; rowCount: number }) => void; reject: (e: Error) => void }>();
 
   constructor(url: string) {
@@ -92,7 +94,7 @@ export class PgSyncDb implements Db {
 
   private call(text: string, params: unknown[], mode: 'query' | 'exec'): { rows: Row[]; rowCount: number } {
     Atomics.store(this.flag, 0, 0);
-    this.port.postMessage({ text, params, mode });
+    this.port.postMessage({ seq: ++this.seq, text, params, mode });
     const r = Atomics.wait(this.flag, 0, 0, TIMEOUT_MS);
     if (r === 'timed-out') throw new Error(`Postgres não respondeu em ${TIMEOUT_MS} ms`);
     const msg = receiveMessageOnPort(this.port)?.message as { ok: boolean; rows?: Row[]; rowCount?: number; message?: string; code?: string } | undefined;
@@ -106,7 +108,7 @@ export class PgSyncDb implements Db {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.asyncPort.ref();
-      this.asyncPort.postMessage({ id, text, params, mode });
+      this.asyncPort.postMessage({ seq: ++this.seq, id, text, params, mode });
     });
   }
 

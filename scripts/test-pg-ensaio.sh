@@ -24,11 +24,23 @@ alter database nutrolab_ensaio owner to nutrolab_ensaio;
 revoke connect on database nutrolab_ensaio from public;
 grant connect on database nutrolab_ensaio to nutrolab_ensaio;
 SQL
-ssh -o BatchMode=yes -o ServerAliveInterval=15 "$HOST" "cd /srv/clinica && docker build -q -t nutrolab:ensaio build/nutrolab-ensaio >/dev/null"
+ssh -o BatchMode=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=30 "$HOST" "cd /srv/clinica && docker build -q -t nutrolab:ensaio build/nutrolab-ensaio >/dev/null"
 # Roda desacoplado (a sessão SSH pode cair em execuções longas) e espera o fim com keepalive.
 ssh -o BatchMode=yes "$HOST" "docker rm -f nutrolab-ensaio-testes >/dev/null 2>&1; docker run -d --name nutrolab-ensaio-testes --network clinica_data \
   -e DATABASE_URL='postgresql://nutrolab_ensaio:$PASS@db:5432/nutrolab_ensaio' -e NUTROLAB_TEST_RESET_PG=1 -e NODE_ENV=test \
   --entrypoint sh nutrolab:ensaio -c 'node --disable-warning=ExperimentalWarning --test --test-concurrency=1 $FILES' >/dev/null"
-CODE=$(ssh -o BatchMode=yes -o ServerAliveInterval=15 "$HOST" "docker wait nutrolab-ensaio-testes")
-ssh -o BatchMode=yes "$HOST" "docker logs nutrolab-ensaio-testes 2>&1; docker rm nutrolab-ensaio-testes >/dev/null"
+# Espera com consultas curtas (a rede Mac↔VPS oscila; uma sessão longa cai).
+SSHQ=(ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 "$HOST")
+for _ in $(seq 1 180); do
+  STATE=$("${SSHQ[@]}" "docker inspect -f '{{.State.Status}} {{.State.ExitCode}}' nutrolab-ensaio-testes" 2>/dev/null || echo "ssh-falhou")
+  case "$STATE" in exited*) break ;; esac
+  sleep 5
+done
+CODE=${STATE#exited }
+for _ in 1 2 3 4 5; do
+  if "${SSHQ[@]}" "docker logs nutrolab-ensaio-testes 2>&1"; then break; fi
+  sleep 5
+done
+"${SSHQ[@]}" "docker rm nutrolab-ensaio-testes >/dev/null" || true
+[[ "$CODE" =~ ^[0-9]+$ ]] || { echo "estado final desconhecido: $STATE"; exit 2; }
 exit "$CODE"

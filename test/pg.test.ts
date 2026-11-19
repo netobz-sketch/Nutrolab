@@ -58,12 +58,14 @@ test('ponte: API assíncrona e síncrona na mesma conexão, em ordem', { skip: !
   const r = await adb.prepare('INSERT INTO async_probe (v) VALUES (?)').run(7);
   assert.ok(r.lastInsertRowid > 0);
   assert.equal(r.changes, 1);
-  // escrita assíncrona seguida de leitura síncrona: a fila do worker preserva a ordem
-  const pending = adb.prepare('INSERT INTO async_probe (v) VALUES (?)').run(8);
-  const sync = db.prepare('SELECT COUNT(*) AS n FROM async_probe').get();
-  await pending;
-  assert.equal(sync?.n, 2);
-  const rows = await adb.prepare('SELECT v FROM async_probe ORDER BY id').all();
+  // escrita assíncrona pendente seguida de leitura síncrona: a ordem de emissão é respeitada (30 vezes)
+  for (let i = 0; i < 30; i += 1) {
+    const pending = adb.prepare('INSERT INTO async_probe (v) VALUES (?)').run(8);
+    const sync = db.prepare('SELECT COUNT(*) AS n FROM async_probe').get();
+    await pending;
+    assert.equal(sync?.n, 2 + i, `rodada ${i}`);
+  }
+  const rows = await adb.prepare('SELECT v FROM async_probe ORDER BY id LIMIT 2').all();
   assert.deepEqual(rows.map((x) => x.v), [7, 8]);
   await assert.rejects(adb.prepare('SELECT * FROM tabela_que_nao_existe').get(), /tabela_que_nao_existe/);
   await adb.exec('DROP TABLE async_probe');
