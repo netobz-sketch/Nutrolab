@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate, authenticateProfessional, consumeReset, updateProfile, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
 import { audit, BRAND_DIR, getAsyncDb, type Row } from '../db.js';
+import { gotruePasswordConfigured, gotruePasswordLogin } from '../sso.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
@@ -62,6 +63,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     let user = null;
     let who = '';
     let next: string | undefined;
+    let via: 'gotrue' | 'local' | 'local_fallback' | 'profissional' = 'profissional';
     if (mode === 'profissional') {
       const parsed = ProLoginBody.safeParse(body);
       if (!parsed.success) return render('Informe nome, CPF, número do conselho e senha.');
@@ -79,18 +81,27 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!parsed.success) return render('Informe e-mail e senha válidos.');
       who = parsed.data.email.toLowerCase();
       next = parsed.data.next;
-      user = await authenticate(parsed.data.email, parsed.data.password);
+      // Senha única: o GoTrue decide. Recusa dele é definitiva; só a indisponibilidade cai na senha local.
+      const sso = await gotruePasswordLogin(parsed.data.email, parsed.data.password);
+      if (sso.kind === 'ok') {
+        user = sso.user;
+        via = 'gotrue';
+      } else if (sso.kind === 'denied') {
+        await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: 'gotrue', motivo: sso.reason }, request.id);
+        return render(sso.message, safeNext(next), sso.reason.startsWith('limite') ? 429 : 401);
+      } else {
+        if (gotruePasswordConfigured()) request.log.warn({ motivo: sso.reason }, 'senha única indisponível: login local');
+        user = await authenticate(parsed.data.email, parsed.data.password);
+        via = gotruePasswordConfigured() ? 'local_fallback' : 'local';
+      }
     }
     if (!user) {
-      await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: mode }, request.id);
+      await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: mode === 'email' ? via : mode }, request.id);
       return render(mode === 'profissional' ? 'Dados não conferem. Verifique nome, CPF, número do conselho e senha.' : 'E-mail ou senha incorretos.', safeNext(next));
-    }
-    if (mode === 'email') {
-      // compatibilidade: variáveis usadas abaixo
     }
     const parsedNext = next;
     loginSucceeded(request.ip);
-    await audit(user.id, 'login', 'user', user.id, { ip: request.ip, modo: mode }, request.id);
+    await audit(user.id, 'login', 'user', user.id, { ip: request.ip, modo: mode, via }, request.id);
     reply.setCookie(COOKIE_NAME, createSessionToken(user), {
       path: '/',
       httpOnly: true,

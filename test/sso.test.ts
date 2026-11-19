@@ -87,3 +87,123 @@ test('sem Bearer o fluxo de cookie segue igual (redireciona ao login)', async ()
   const r = await app.inject({ method: 'GET', url: '/casos', headers: H });
   assert.equal(r.statusCode, 302);
 });
+
+/* ----------------------------------------- senha única: login no GoTrue */
+
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+
+type FakeMode = 'ok' | 'wrong' | 'down503' | 'badtoken' | 'ratelimit' | 'otheremail' | 'badrole';
+let fakeMode: FakeMode = 'ok';
+const seen: Array<{ apikey: string | undefined; url: string | undefined; body: string }> = [];
+const fake = http.createServer((req, res) => {
+  let body = '';
+  req.on('data', (c: Buffer) => { body += c.toString(); });
+  req.on('end', () => {
+    seen.push({ apikey: req.headers.apikey as string | undefined, url: req.url, body });
+    const { email } = JSON.parse(body || '{}') as { email?: string };
+    const send = (status: number, payload: unknown) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
+    if (fakeMode === 'wrong') return send(400, { error: 'invalid_grant', error_description: 'Invalid login credentials' });
+    if (fakeMode === 'down503') return send(503, { message: 'unavailable' });
+    if (fakeMode === 'ratelimit') return send(429, { message: 'rate limit' });
+    if (fakeMode === 'badtoken') return send(200, { access_token: jwt(claims({ email }), 'outro-segredo-qualquer-com-32-caracteres') });
+    if (fakeMode === 'otheremail') return send(200, { access_token: jwt(claims({ email: 'outra@ln.local' })) });
+    if (fakeMode === 'badrole') return send(200, { access_token: jwt(claims({ email, app_metadata: { role: 'recepcao' } })) });
+    return send(200, { access_token: jwt(claims({ email, app_metadata: { role: 'administrador' }, user_metadata: { full_name: 'Dr. Senha Única' } })), token_type: 'bearer' });
+  });
+});
+await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
+const fakeUrl = `http://127.0.0.1:${(fake.address() as AddressInfo).port}`;
+after(() => new Promise<void>((resolve) => fake.close(() => resolve())));
+
+const login = (email: string, password: string) =>
+  app.inject({ method: 'POST', url: '/login', headers: { ...H, 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams({ email, password }).toString() });
+const withGotrue = async <T>(fn: () => Promise<T>, url = fakeUrl): Promise<T> => {
+  process.env.GOTRUE_URL = url;
+  process.env.GOTRUE_ANON_KEY = 'anon-publica-de-teste';
+  try {
+    return await fn();
+  } finally {
+    delete process.env.GOTRUE_URL;
+    delete process.env.GOTRUE_ANON_KEY;
+  }
+};
+const lastLoginAudit = async () => (await getAsyncDb().prepare("SELECT action, details FROM audit_log WHERE action IN ('login', 'login_falhou') ORDER BY id DESC LIMIT 1").get()) as { action: string; details: string };
+
+test('senha única: GoTrue aceita → cookie de sessão, usuário mapeado, apikey enviada e via=gotrue', async () => {
+  await withGotrue(async () => {
+    fakeMode = 'ok';
+    seen.length = 0;
+    const r = await login('Unica@LN.local', 'senha-do-gotrue-1');
+    assert.equal(r.statusCode, 302);
+    assert.match(String(r.headers['set-cookie'] ?? ''), /nl_session=/);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.apikey, 'anon-publica-de-teste');
+    assert.equal(seen[0]?.url, '/auth/v1/token?grant_type=password');
+    assert.deepEqual(JSON.parse(seen[0]?.body ?? '{}'), { email: 'unica@ln.local', password: 'senha-do-gotrue-1' });
+    const u = (await getAsyncDb().prepare("SELECT role, name, password_hash FROM users WHERE email = 'unica@ln.local'").get()) as { role: string; name: string; password_hash: string };
+    assert.equal(u.role, 'admin');
+    assert.equal(u.name, 'Dr. Senha Única');
+    assert.match(u.password_hash, /^sso:/, 'senha local inutilizável');
+    const a = await lastLoginAudit();
+    assert.equal(a.action, 'login');
+    assert.equal(JSON.parse(a.details).via, 'gotrue');
+    assert.doesNotMatch(a.details, /senha-do-gotrue/);
+  });
+});
+
+test('senha única: GoTrue recusa a senha → 401 e a senha LOCAL não é tentada', async () => {
+  await withGotrue(async () => {
+    fakeMode = 'wrong';
+    // admin@sso.local tem senha local válida (bootstrap); com o GoTrue recusando, ela não abre a conta.
+    const r = await login('admin@sso.local', 'senha-admin-sso-1');
+    assert.equal(r.statusCode, 401);
+    assert.match(r.body, /E-mail ou senha incorretos/);
+    assert.equal(r.headers['set-cookie'], undefined);
+    const a = await lastLoginAudit();
+    assert.equal(a.action, 'login_falhou');
+    assert.equal(JSON.parse(a.details).modo, 'gotrue');
+  });
+});
+
+test('senha única: GoTrue fora do ar (503 ou sem conexão) → login local, via=local_fallback', async () => {
+  await withGotrue(async () => {
+    fakeMode = 'down503';
+    const r = await login('admin@sso.local', 'senha-admin-sso-1');
+    assert.equal(r.statusCode, 302);
+    assert.equal(JSON.parse((await lastLoginAudit()).details).via, 'local_fallback');
+    const wrongLocal = await login('admin@sso.local', 'senha-errada-local');
+    assert.equal(wrongLocal.statusCode, 401, 'no fallback a senha local continua sendo verificada');
+  });
+  // porta fechada: conexão recusada
+  const closed = http.createServer();
+  await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
+  const port = (closed.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => closed.close(() => resolve()));
+  await withGotrue(async () => {
+    const r = await login('admin@sso.local', 'senha-admin-sso-1');
+    assert.equal(r.statusCode, 302);
+  }, `http://127.0.0.1:${port}`);
+});
+
+test('senha única: token inválido, de outro e-mail, papel sem acesso e limite de tentativas são recusados sem cair no local', async () => {
+  await withGotrue(async () => {
+    for (const [mode, status, text] of [['badtoken', 401, /confirmar o acesso/], ['otheremail', 401, /confirmar o acesso/], ['badrole', 401, /perfil não tem acesso/], ['ratelimit', 429, /Muitas tentativas/]] as const) {
+      fakeMode = mode;
+      const r = await login('admin@sso.local', 'senha-admin-sso-1');
+      assert.equal(r.statusCode, status, mode);
+      assert.match(r.body, text, mode);
+      assert.equal(r.headers['set-cookie'], undefined, mode);
+    }
+    const n = (await getAsyncDb().prepare("SELECT COUNT(*) AS n FROM users WHERE email IN ('outra@ln.local')").get()) as { n: number };
+    assert.equal(n.n, 0);
+  });
+});
+
+test('sem GOTRUE_URL/GOTRUE_ANON_KEY o login por e-mail segue local, sem chamar o GoTrue', async () => {
+  seen.length = 0;
+  const r = await login('admin@sso.local', 'senha-admin-sso-1');
+  assert.equal(r.statusCode, 302);
+  assert.equal(seen.length, 0);
+  assert.equal(JSON.parse((await lastLoginAudit()).details).via, 'local');
+});

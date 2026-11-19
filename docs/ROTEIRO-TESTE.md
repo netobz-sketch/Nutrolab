@@ -15,11 +15,14 @@ Endereço: https://nutrolab.srv2086528.hstgr.cloud
 
 ## 1. Entrar no sistema
 
-- [ ] Abra o endereço e entre com seu e-mail e senha.
+- [ ] Abra o endereço e entre com seu e-mail e a **senha única**, a mesma do acesso inicial do
+      LN Medicina Integrada. Uma senha errada é recusada, mesmo que seja a senha antiga do NutroLab.
 - [ ] Entre também pelo login profissional: nome, CPF e número do conselho (se ainda não
-      preencheu, faça isso em **seu nome → Meu cadastro**).
-- [ ] Troque a senha inicial em **Meu cadastro → Trocar senha**. Guarde a nova num lugar seguro.
-- [ ] Teste "Esqueci a senha" na tela de login: o e-mail com o link deve chegar em poucos minutos.
+      preencheu, faça isso em **seu nome → Meu cadastro**). Esse login usa a senha **local** do
+      NutroLab e é a saída de emergência.
+- [ ] A senha única se troca no acesso inicial da clínica, não no NutroLab. **Meu cadastro → Trocar
+      senha** e "Esqueci a senha" mudam só a senha local, usada no login profissional e quando o
+      acesso inicial estiver fora do ar. Mantenha essa senha local forte e guardada.
 - [ ] **Login único com o LN Evolution:** quando o LN publicar o login único, entrar no LN deve
       bastar para abrir o NutroLab sem pedir senha de novo. Até lá, este item fica pendente.
 
