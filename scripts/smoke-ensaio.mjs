@@ -55,6 +55,8 @@ if (phase === 'fluxo') {
   check('exporta relatório técnico (.md, sem e-mail do médico)', dl.status === 200 && /\.md/.test(dl.headers.get('content-disposition') ?? '') && !db.includes(EMAIL), String(dl.status));
   const pr = await get(`/casos/${id}/analises/${aid}/imprimir?tipo=resumido`);
   check('versão para impressão do resumido', pr.status === 200 && /<html/i.test(await pr.text()), String(pr.status));
+  const badId = await get(`/casos/${id}/analises/undefined`);
+  check('id inválido na URL → 404 (não 500)', badId.status === 404, String(badId.status));
   const csv = await get('/regras/exportar.csv');
   const cb = await csv.text();
   check('exporta regras em CSV', csv.status === 200 && cb.startsWith('exame_canonico,'), String(csv.status));

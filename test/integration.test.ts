@@ -330,6 +330,17 @@ test('v2 POST /cases liga o caso ao paciente canônico pelo code (uuid do clinic
   assert.equal(c.patient_id, p.id);
 });
 
+test('id numérico inválido → 404 no envelope da API; o token continua sendo exigido antes', async () => {
+  for (const url of ['/api/integration/cases/undefined', '/api/integration/analyses/NaN', '/api/integration/analyses/0/export', '/api/integration/analyses/abc/export']) {
+    const r = await get(url);
+    if (r.statusCode === 404 && r.json().error?.code === 'NOT_FOUND') continue;
+    assert.fail(`${url}: ${r.statusCode} ${r.body}`);
+  }
+  const anon = await app.inject({ method: 'GET', url: '/api/integration/cases/undefined', headers: INTERNAL });
+  assert.equal(anon.statusCode, 401);
+  assert.equal((await get(`/api/integration/cases/${caseId}`)).statusCode, 200, 'id válido continua funcionando');
+});
+
 test('auditoria registra cada chamada com user_id nulo e ação integ_*', async () => {
   const rows = (await getAsyncDb().prepare("SELECT action, entity, user_id, details, request_id FROM audit_log WHERE action LIKE 'integ_%' ORDER BY id").all()) as Array<{ action: string; entity: string; user_id: number | null; details: string | null; request_id: string | null }>;
   const actions = new Set(rows.map((r) => r.action));

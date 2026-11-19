@@ -461,6 +461,22 @@ test('design LN: só tema claro, sem alternância, nome e fonte local', async ()
   assert.equal((await app.inject({ method: 'GET', url: '/assets/fonts/..%2Fpackage.json', headers: H })).statusCode, 404);
 });
 
+test('id numérico inválido na URL → 404 antes de consultar o banco (Postgres dava 500 por 22P02)', async () => {
+  const { isValidId, invalidIdParam } = await import('../src/route-ids.js');
+  for (const ok of ['1', '42', '999999999999999']) assert.equal(isValidId(ok), true, ok);
+  for (const bad of ['undefined', 'NaN', '0', '-1', '1.5', '01', ' 1', '1e3', '', '9999999999999999', undefined, 7]) assert.equal(isValidId(bad), false, String(bad));
+  assert.equal(invalidIdParam({ id: '3', aid: 'undefined' }), 'aid');
+  assert.equal(invalidIdParam({ code: 'P-0001', token: 'abc' }), null);
+  assert.equal((await get('/casos')).statusCode, 200, 'sessão ainda válida');
+  for (const url of ['/casos/undefined', '/casos/0', '/casos/1/analises/undefined', '/casos/1/analises/NaN/download?tipo=tecnico', '/casos/1/analises/1.5/imprimir?tipo=resumido', '/pacientes/abc']) {
+    const r = await get(url);
+    assert.equal(r.statusCode, 404, url);
+    assert.match(r.body, /Página não encontrada/, url);
+  }
+  assert.equal((await post('/casos/undefined/status', { status: 'revisado' })).statusCode, 404);
+  assert.equal((await get('/casos/1')).statusCode, 200, 'id válido continua funcionando');
+});
+
 test('tradução de dialeto SQLite → Postgres', async () => {
   const { translate, numberPlaceholders } = await import('../src/pg/translate.js');
   assert.equal(numberPlaceholders("SELECT * FROM t WHERE a = ? AND b = '?' AND c = ?").text, "SELECT * FROM t WHERE a = $1 AND b = '?' AND c = $2");

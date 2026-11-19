@@ -11,6 +11,7 @@ import { casesRoutes } from './routes/cases.routes.js';
 import { configRoutes } from './routes/config.routes.js';
 import { patientsRoutes } from './routes/patients.routes.js';
 import { integrationRoutes } from './integration.js';
+import { invalidIdParam } from './route-ids.js';
 
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
@@ -71,6 +72,11 @@ app.addHook('onRequest', async (request, reply) => {
 
 app.get('/health', async () => ({ status: 'ok', ai: aiEnabled() ? AI_MODEL : 'off' }));
 
+// Id numérico inválido na URL → 404 antes de qualquer consulta, pelo handler de 404 de cada contexto
+// (HTML nas telas, envelope JSON na API de integração, que já validou o token no onRequest).
+app.addHook('preValidation', async (request, reply) => {
+  if (invalidIdParam(request.params)) return reply.callNotFound();
+});
 await app.register(authRoutes);
 await app.register(casesRoutes);
 await app.register(configRoutes);
