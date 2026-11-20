@@ -207,3 +207,32 @@ test('sem GOTRUE_URL/GOTRUE_ANON_KEY o login por e-mail segue local, sem chamar 
   assert.equal(seen.length, 0);
   assert.equal(JSON.parse((await lastLoginAudit()).details).via, 'local');
 });
+
+test('trocar senha e esqueci a senha apontam para a senha central quando o login único está ligado', async () => {
+  const page = (url: string) => app.inject({ method: 'GET', url, headers: { ...H, authorization: `Bearer ${jwt(claims())}` } });
+  const before = await page('/senha');
+  assert.equal(before.statusCode, 200);
+  assert.doesNotMatch(before.body, /acesso LN Medicina Integrada/);
+  assert.doesNotMatch((await page('/esqueci')).body, /acesso LN Medicina Integrada/);
+
+  process.env.GOTRUE_PUBLIC_APP_URL = 'https://app.ln.test/';
+  try {
+    await withGotrue(async () => {
+      const senha = await page('/senha');
+      assert.match(senha.body, /Sua senha é a do acesso LN Medicina Integrada/);
+      assert.match(senha.body, /href="https:\/\/app\.ln\.test\/configuracoes"/);
+      assert.match(senha.body, /name="current"/, 'a senha local de emergência continua trocável');
+      const esqueci = await page('/esqueci');
+      assert.match(esqueci.body, /href="https:\/\/app\.ln\.test\/recuperar-senha"/);
+      assert.match(esqueci.body, /Senha local de emergência/);
+    });
+    process.env.GOTRUE_PUBLIC_APP_URL = 'javascript:alert(1)';
+    await withGotrue(async () => {
+      const esqueci = await page('/esqueci');
+      assert.match(esqueci.body, /Sua senha é a do acesso LN Medicina Integrada/);
+      assert.doesNotMatch(esqueci.body, /recuperar-senha|javascript:/, 'URL inválida esconde o link');
+    });
+  } finally {
+    delete process.env.GOTRUE_PUBLIC_APP_URL;
+  }
+});

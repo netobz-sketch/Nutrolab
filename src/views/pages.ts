@@ -4,7 +4,7 @@ import type { SessionUser } from '../auth.js';
 import { formatCpf } from '../cpf.js';
 import type { ConductTemplate, Formula, Patient } from '../db.js';
 import type { Evaluation, Guidance, Rule } from '../engine/index.js';
-import { lnPatientUrl } from '../ln-link.js';
+import { lnPatientUrl, type CentralPasswordLinks } from '../ln-link.js';
 import { attr, brandMark, fmtDate, h, icon, option, statusTag } from './html.js';
 
 export interface CaseRow {
@@ -79,11 +79,19 @@ ${error ? `<div class="flash err">${h(error)}</div>` : ''}
 <p><button class="btn" type="submit">Salvar</button> <a class="btn sec" href="/senha">Alterar senha</a></p></form>`;
 }
 
-export function forgotPage(message: string | null, mailOn: boolean, done = false): string {
+/** Aviso de que a senha do login por e-mail é a do acesso LN Medicina Integrada. */
+export function centralPasswordNotice(links: CentralPasswordLinks, kind: 'change' | 'recover'): string {
+  const href = kind === 'change' ? links.settings : links.recover;
+  const label = kind === 'change' ? 'Trocar a senha no acesso LN Medicina Integrada' : 'Recuperar a senha no acesso LN Medicina Integrada';
+  return `<div class="flash warn central-password"><b>Sua senha é a do acesso LN Medicina Integrada.</b> É ela que vale no login por e-mail do NutroLab.${href ? ` <a href="${attr(href)}" rel="noopener">${label}</a>` : ''}</div>`;
+}
+
+export function forgotPage(message: string | null, mailOn: boolean, done = false, central: CentralPasswordLinks | null = null): string {
+  const local = central ? '<h2 style="font-size:15px;margin:14px 0 4px">Senha local de emergência</h2><p class="muted small">Vale só no login profissional (CPF e conselho) e quando o acesso central estiver fora do ar.</p>' : '';
   const body = mailOn
     ? `<form method="post" action="/esqueci"><label>E-mail cadastrado</label><input name="email" type="email" required autofocus><p><button class="btn" type="submit" style="width:100%">Enviar link de redefinição</button></p></form>`
     : `<p>O envio de e-mail ainda não está configurado neste servidor. Peça ao administrador um <b>link de redefinição</b> (ele gera em Configurações → Usuários e envia para você por mensagem).</p>`;
-  return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a><h1 style="text-align:center;font-size:20px">Esqueci a senha</h1>${message ? `<div class="flash ${done ? 'ok' : 'err'}">${h(message)}</div>` : ''}${done ? '' : body}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
+  return `<div class="card"><a class="brand" href="/login">${brandMark('login')}</a><h1 style="text-align:center;font-size:20px">Esqueci a senha</h1>${central && !done ? centralPasswordNotice(central, 'recover') : ''}${message ? `<div class="flash ${done ? 'ok' : 'err'}">${h(message)}</div>` : ''}${done ? '' : local + body}<p style="text-align:center;margin:10px 0 0"><a href="/login" class="small">Voltar ao login</a></p></div>`;
 }
 
 export function resetPage(token: string, error: string | null, dead: boolean): string {

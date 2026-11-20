@@ -20,9 +20,11 @@ Endereço: https://nutrolab.srv2086528.hstgr.cloud
 - [ ] Entre também pelo login profissional: nome, CPF e número do conselho (se ainda não
       preencheu, faça isso em **seu nome → Meu cadastro**). Esse login usa a senha **local** do
       NutroLab e é a saída de emergência.
-- [ ] A senha única se troca no acesso inicial da clínica, não no NutroLab. **Meu cadastro → Trocar
-      senha** e "Esqueci a senha" mudam só a senha local, usada no login profissional e quando o
-      acesso inicial estiver fora do ar. Mantenha essa senha local forte e guardada.
+- [ ] A senha única se troca no acesso inicial da clínica (app.lnmedicinaintegrada.com.br →
+      Configurações), não no NutroLab. **Meu cadastro → Alterar senha** e "Esqueci a senha" mostram
+      esse aviso com o link para lá; o formulário que fica abaixo muda só a **senha local de
+      emergência**, usada no login profissional e quando o acesso central estiver fora do ar. Mantenha
+      essa senha local forte e guardada.
 - [ ] **Logo depois da atualização da senha única:** quando o Claude avisar que publicou, entre no
       NutroLab com seu e-mail e a senha única e diga se entrou. Se aparecer "Seu perfil não tem
       acesso" ou "E-mail ou senha incorretos" com a senha certa, avise na hora: o Claude volta a

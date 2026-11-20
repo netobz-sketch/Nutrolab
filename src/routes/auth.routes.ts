@@ -6,7 +6,8 @@ import { gotruePasswordConfigured, gotruePasswordLogin } from '../sso.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
-import { forgotPage, profilePage, resetPage } from '../views/pages.js';
+import { centralPasswordNotice, forgotPage, profilePage, resetPage } from '../views/pages.js';
+import { centralPasswordLinks } from '../ln-link.js';
 import { normalizeText } from '../engine/index.js';
 import { COUNCILS, normalizeCouncilNumber, normalizeCpf, UFS } from '../cpf.js';
 import { layout } from '../views/html.js';
@@ -138,11 +139,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.redirect('/perfil?kind=ok&msg=' + encodeURIComponent('Cadastro atualizado.'));
   });
 
-  const passwordForm = (error: string | null, ok = false) => `<div class="card login"><h1>Alterar senha</h1>${error ? `<div class="flash err">${error}</div>` : ''}${ok ? '<div class="flash ok">Senha alterada.</div>' : ''}
+  const passwordForm = (error: string | null, ok = false) => {
+    const central = centralPasswordLinks();
+    return `<div class="card login"><h1>${central ? 'Senha local de emergência' : 'Alterar senha'}</h1>${central ? centralPasswordNotice(central, 'change') + '<p class="muted small">Aqui você troca só a senha local, usada no login profissional (CPF e conselho) e quando o acesso central estiver fora do ar.</p>' : ''}${error ? `<div class="flash err">${error}</div>` : ''}${ok ? '<div class="flash ok">Senha alterada.</div>' : ''}
 <form method="post" action="/senha"><label>Senha atual</label><input name="current" type="password" autocomplete="current-password" required>
 <label>Nova senha (mín. 10)</label><input name="password" type="password" autocomplete="new-password" minlength="10" required>
 <label>Confirmar nova senha</label><input name="confirm" type="password" autocomplete="new-password" required>
 <p><button class="btn" type="submit">Salvar</button> <a class="btn sec" href="/casos">Voltar</a></p></form></div>`;
+  };
 
   app.get('/senha', { preHandler: requireAuth }, async (request, reply) => reply.type('text/html; charset=utf-8').send(layout({ title: 'Alterar senha', user: request.user, body: passwordForm(null) })));
 
@@ -161,13 +165,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return render(null, true);
   });
 
-  app.get('/esqueci', async (request, reply) => reply.type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage(null, mailEnabled()) })));
+  app.get('/esqueci', async (request, reply) => reply.type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage(null, mailEnabled(), false, centralPasswordLinks()) })));
 
   app.post('/esqueci', async (request, reply) => {
     const email = String((request.body as { email?: string } | null)?.email ?? '').trim().toLowerCase();
     const done = 'Se este e-mail estiver cadastrado, você receberá um link válido por 1 hora. Confira também a caixa de spam.';
-    if (!mailEnabled()) return reply.type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage(null, false) }));
-    if (!resetAllowed(request.ip)) return reply.code(429).type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage('Muitas tentativas. Aguarde 15 minutos.', true) }));
+    if (!mailEnabled()) return reply.type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage(null, false, false, centralPasswordLinks()) }));
+    if (!resetAllowed(request.ip)) return reply.code(429).type('text/html; charset=utf-8').send(layout({ title: 'Esqueci a senha', user: null, body: forgotPage('Muitas tentativas. Aguarde 15 minutos.', true, false, centralPasswordLinks()) }));
     const user = email ? await findUserByEmail(email) : null;
     if (user) {
       const { token } = await createResetToken(user.id, 'email', null);
