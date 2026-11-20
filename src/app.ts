@@ -41,7 +41,7 @@ app.addHook('onRequest', async (request, reply) => {
   if (ALLOWED_HOSTS.length && !ALLOWED_HOSTS.includes(hostname) && request.url !== '/health' && !integration) {
     return reply.code(421).send('host não permitido');
   }
-  if (request.method === 'POST') {
+  if (request.method === 'POST' && request.url.split('?')[0] !== '/sso/callback') {
     const origin = request.headers.origin ?? request.headers.referer;
     if (origin) {
       try {

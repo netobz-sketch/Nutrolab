@@ -2,15 +2,15 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate, authenticateProfessional, consumeReset, updateProfile, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
 import { audit, BRAND_DIR, getAsyncDb, type Row } from '../db.js';
-import { gotruePasswordConfigured, gotruePasswordLogin } from '../sso.js';
+import { gotruePasswordConfigured, gotruePasswordLogin, ssoEnabled, userFromClaims, verifyGotrueJwt } from '../sso.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
 import { centralPasswordNotice, forgotPage, profilePage, resetPage } from '../views/pages.js';
-import { centralPasswordLinks } from '../ln-link.js';
+import { centralPasswordLinks, integratedAppBase } from '../ln-link.js';
 import { normalizeText } from '../engine/index.js';
 import { COUNCILS, normalizeCouncilNumber, normalizeCpf, UFS } from '../cpf.js';
-import { layout } from '../views/html.js';
+import { attr, layout } from '../views/html.js';
 import { loginPage } from '../views/pages.js';
 
 const PasswordBody = z.object({ current: z.string().min(1), password: z.string().min(10, 'nova senha com ao menos 10 caracteres'), confirm: z.string() }).refine((b) => b.password === b.confirm, 'a confirmação não confere');
@@ -27,9 +27,11 @@ const ProfileBody = z.object({
   profession: z.string().trim().default(''),
 });
 
-function safeNext(next: string | undefined): string {
-  return next && next.startsWith('/') && !next.startsWith('//') ? next : '/casos';
+/** Só caminho interno: começa com uma barra, sem "//", sem barra invertida nem caractere de controle. */
+export function safeNext(next: string | undefined): string {
+  return typeof next === 'string' && /^\/(?![/\\])[^\\\u0000-\u001f]*$/.test(next) ? next : '/casos';
 }
+
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // Fonte Inter servida localmente (design LN), pública e imutável.
@@ -52,8 +54,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/login', async (request, reply) => {
     if (request.user) return reply.redirect('/casos');
-    const q = request.query as { next?: string; modo?: string };
-    return reply.type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(null, safeNext(q.next), q.modo === 'email' ? 'email' : 'profissional') }));
+    const q = request.query as { next?: string; modo?: string; from?: string; sso?: string };
+    // Vindo do sistema integrado: o broker de lá repassa a sessão por POST em /sso/callback.
+    const broker = integratedAppBase();
+    if (q.from === 'app' && broker && ssoEnabled()) return reply.redirect(`${broker}/sso/exames`);
+    const ssoFailed = q.sso === 'falhou';
+    return reply.type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage(ssoFailed ? 'Não deu para entrar direto pelo sistema integrado. Entre com seu e-mail e a senha do acesso LN Medicina Integrada.' : null, safeNext(q.next), ssoFailed || q.modo === 'email' ? 'email' : 'profissional') }));
   });
 
   app.post('/login', async (request, reply) => {
@@ -112,6 +118,50 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     });
     const incomplete = !user.cpf || !user.council_number;
     return reply.redirect(incomplete && mode === 'email' ? '/perfil?kind=warn&msg=' + encodeURIComponent('Complete seu cadastro profissional (CPF e conselho) para entrar pela tela profissional.') : safeNext(parsedNext));
+  });
+
+  /**
+   * Passagem de sessão do sistema integrado (contrato: PLANO-LN-MEDICINA-INTEGRADA §9).
+   * O financeiro posta access_token + return (+ retry=1 na segunda tentativa) por formulário;
+   * validamos o JWT como no Bearer, emitimos o nl_session normal (12 h, sem renovação pelo
+   * GoTrue) e seguimos para `return` (só caminho interno). Nenhum token vai para URL, log ou
+   * auditoria; refresh_token não é recebido.
+   */
+  app.post('/sso/callback', async (request, reply) => {
+    const broker = integratedAppBase();
+    const secret = process.env.GOTRUE_JWT_SECRET?.trim();
+    if (!broker || !secret) return reply.code(404).send('não encontrado');
+    let originOk = false;
+    try {
+      originOk = !!request.headers.origin && new URL(request.headers.origin).origin === new URL(broker).origin;
+    } catch {
+      originOk = false;
+    }
+    if (!originOk) return reply.code(403).send('origem inválida');
+    if (!loginAllowed(request.ip)) return reply.code(429).type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage('Muitas tentativas. Aguarde 15 minutos.', '/casos', 'email') }));
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const token = typeof body.access_token === 'string' ? body.access_token.trim() : '';
+    const target = safeNext(typeof body.return === 'string' ? body.return : undefined);
+    const secure = process.env.NODE_ENV === 'production';
+    const verified = token ? verifyGotrueJwt(token, secret) : { error: 'sem token' };
+    const result = 'error' in verified ? { ok: false as const, status: 401 as const, reason: verified.error } : await userFromClaims(verified.claims);
+    if (!result.ok) {
+      const who = 'claims' in verified ? (verified.claims.email ?? '').toLowerCase() : '';
+      await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: 'sso_handoff', motivo: result.reason }, request.id);
+      if (result.status === 403) {
+        return reply.code(403).type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage('Seu perfil não tem acesso ao NutroLab. Fale com o administrador.', target, 'email') }));
+      }
+      // Token vencido ou inválido: pede um novo ao broker UMA vez (ele reposta com retry=1);
+      // na segunda falha, login normal.
+      if (body.retry !== '1') return reply.redirect(`${broker}/sso/exames?retry=1`);
+      return reply.redirect('/login?sso=falhou&next=' + encodeURIComponent(target));
+    }
+    loginSucceeded(request.ip);
+    await audit(result.user.id, 'login', 'user', result.user.id, { ip: request.ip, modo: 'email', via: 'sso_handoff' }, request.id);
+    reply.setCookie(COOKIE_NAME, createSessionToken(result.user), { path: '/', httpOnly: true, sameSite: 'strict', secure, maxAge: 12 * 3600 });
+    // O cookie é SameSite=Strict: um 302 direto, ainda dentro da navegação vinda do financeiro, chegaria
+    // sem ele. A página abaixo segue para o destino como navegação do próprio NutroLab.
+    return reply.type('text/html; charset=utf-8').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${attr(target)}"><title>Entrando…</title></head><body><p><a href="${attr(target)}">Continuar para o NutroLab</a></p></body></html>`);
   });
 
   app.get('/perfil', { preHandler: requireAuth }, async (request, reply) => {

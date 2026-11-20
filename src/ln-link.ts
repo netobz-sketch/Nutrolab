@@ -41,6 +41,11 @@ export type CentralPasswordLinks = { settings: string | null; recover: string | 
 
 export function centralPasswordLinks(raw: string | undefined = process.env.GOTRUE_PUBLIC_APP_URL): CentralPasswordLinks | null {
   if (!gotruePasswordConfigured()) return null;
-  const base = publicHttpBase(raw);
+  const base = integratedAppBase(raw);
   return { settings: base ? `${base}/configuracoes` : null, recover: base ? `${base}/recuperar-senha` : null };
+}
+
+/** Página inicial do sistema integrado (app LN Medicina Integrada), ou null sem GOTRUE_PUBLIC_APP_URL válida. */
+export function integratedAppBase(raw: string | undefined = process.env.GOTRUE_PUBLIC_APP_URL): string | null {
+  return publicHttpBase(raw);
 }

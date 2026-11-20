@@ -1,5 +1,6 @@
 import type { SessionUser } from '../auth.js';
 import { cachedSetting } from '../db.js';
+import { integratedAppBase } from '../ln-link.js';
 
 function logoVersion(): string {
   try {
@@ -184,6 +185,7 @@ const ICONS: Record<string, string> = {
   pill: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m10.5 20.5 10-10a4.95 4.95 0 1 0-7-7l-10 10a4.95 4.95 0 1 0 7 7z"/><path d="m8.5 8.5 7 7"/></svg>',
   patients: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
   template: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  home: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>',
   logo: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v6l4 9a2 2 0 0 1-2 3H7a2 2 0 0 1-2-3l4-9z"/><path d="M8 15h8"/></svg>',
   theme: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9c0-.5 0-.9-.1-1.4A5.5 5.5 0 0 1 12 3z"/></svg>',
   warn: '<svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
@@ -219,9 +221,12 @@ export function layout(opts: { title: string; user: SessionUser | null; body: st
   }
   const item = (href: string, key: string, label: string, ic: keyof typeof ICONS) => `<a class="item${opts.active === key ? ' active' : ''}" href="${href}">${icon(ic)}<span>${label}</span></a>`;
   const admin = opts.user.role === 'admin';
+  // Com o sistema integrado configurado, a marca leva à página inicial dele; "Casos" segue como home do módulo.
+  const home = integratedAppBase();
   return `${head}<body><div class="shell">
 <nav class="sidenav" aria-label="Principal">
-<a class="brand" href="/casos" style="flex-wrap:wrap">${brandMark('nav')}</a>
+<a class="brand" href="${attr(home ?? '/casos')}" style="flex-wrap:wrap"${home ? ' title="Início · LN Medicina Integrada"' : ''}>${brandMark('nav')}</a>
+${home ? `<a class="item" href="${attr(home)}">${icon('home')}<span>Início · LN Medicina Integrada</span></a>` : ''}
 ${item('/pacientes', 'pacientes', 'Pacientes', 'patients')}
 ${item('/casos', 'casos', 'Casos', 'cases')}
 ${item('/regras', 'regras', 'Referências dos exames', 'rules')}

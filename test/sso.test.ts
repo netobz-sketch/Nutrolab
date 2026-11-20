@@ -236,3 +236,89 @@ test('trocar senha e esqueci a senha apontam para a senha central quando o login
     delete process.env.GOTRUE_PUBLIC_APP_URL;
   }
 });
+
+const APP = 'https://app.ln.test';
+const handoff = (fields: Record<string, string>, origin: string | null = APP) =>
+  app.inject({ method: 'POST', url: '/sso/callback', headers: { ...H, ...(origin ? { origin } : {}), 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams(fields).toString() });
+const withApp = async <T>(fn: () => Promise<T>): Promise<T> => {
+  process.env.GOTRUE_PUBLIC_APP_URL = APP;
+  try {
+    return await fn();
+  } finally {
+    delete process.env.GOTRUE_PUBLIC_APP_URL;
+  }
+};
+const handoffToken = () => jwt(claims({ email: 'handoff@ln.local', app_metadata: { role: 'medico' }, user_metadata: { full_name: 'Dra. Handoff' } }));
+
+test('sso handoff: token válido entra, cookie emitido e destino interno por navegação do próprio NutroLab', async () => {
+  await withApp(async () => {
+    const token = handoffToken();
+    const r = await handoff({ access_token: token, return: '/pacientes' });
+    assert.equal(r.statusCode, 200);
+    assert.match(String(r.headers['set-cookie'] ?? ''), /nl_session=[^;]+;.*SameSite=Strict/i);
+    assert.match(r.body, /http-equiv="refresh" content="0;url=\/pacientes"/);
+    const a = await lastLoginAudit();
+    assert.equal(a.action, 'login');
+    assert.equal(JSON.parse(a.details).via, 'sso_handoff');
+    const all = (await getAsyncDb().prepare('SELECT details FROM audit_log').all()) as { details: string | null }[];
+    assert.ok(all.every((x) => !(x.details ?? '').includes(token.slice(-20))), 'token não vai para a auditoria');
+    const cookie = String(r.headers['set-cookie']).split(';')[0] ?? '';
+    const casos = await app.inject({ method: 'GET', url: '/casos', headers: { ...H, cookie } });
+    assert.equal(casos.statusCode, 200);
+    assert.match(casos.body, /Dra\. Handoff/);
+  });
+});
+
+test('sso handoff: token expirado pede um novo ao broker uma vez; com retry=1 vai ao login', async () => {
+  await withApp(async () => {
+    const expired = jwt(claims({ email: 'handoff@ln.local', exp: now() - 5 }));
+    const first = await handoff({ access_token: expired, return: '/casos' });
+    assert.equal(first.statusCode, 302);
+    assert.equal(first.headers.location, `${APP}/sso/exames?retry=1`);
+    assert.equal(first.headers['set-cookie'], undefined);
+    const second = await handoff({ access_token: expired, return: '/casos', retry: '1' });
+    assert.equal(second.statusCode, 302);
+    assert.match(String(second.headers.location), /^\/login\?sso=falhou/);
+    const page = await app.inject({ method: 'GET', url: String(second.headers.location), headers: H });
+    assert.match(page.body, /Não deu para entrar direto pelo sistema integrado/);
+    assert.equal(JSON.parse((await lastLoginAudit()).details).modo, 'sso_handoff');
+  });
+});
+
+test('sso handoff: Origin errado ou ausente → 403; papel sem acesso → 403 sem sessão; sem a env → 404', async () => {
+  await withApp(async () => {
+    assert.equal((await handoff({ access_token: handoffToken() }, 'https://malicioso.test')).statusCode, 403);
+    assert.equal((await handoff({ access_token: handoffToken() }, `${APP}:8443`)).statusCode, 403);
+    assert.equal((await handoff({ access_token: handoffToken() }, null)).statusCode, 403);
+    const badRole = await handoff({ access_token: jwt(claims({ email: 'recepcao@ln.local', app_metadata: { role: 'recepcao' } })) });
+    assert.equal(badRole.statusCode, 403);
+    assert.equal(badRole.headers['set-cookie'], undefined);
+  });
+  assert.equal((await handoff({ access_token: handoffToken() })).statusCode, 404);
+});
+
+test('sso handoff: return externo é recusado e cai em /casos', async () => {
+  await withApp(async () => {
+    for (const ret of ['https://malicioso.test/x', '//malicioso.test', '/\\malicioso.test', 'javascript:alert(1)', '/ok\nSet-Cookie: x']) {
+      const r = await handoff({ access_token: handoffToken(), return: ret });
+      assert.equal(r.statusCode, 200, ret);
+      assert.match(r.body, /content="0;url=\/casos"/, ret);
+    }
+  });
+});
+
+test('GET /login?from=app vai ao broker; marca e "Início" apontam para o sistema integrado', async () => {
+  assert.equal((await app.inject({ method: 'GET', url: '/login?from=app', headers: H })).statusCode, 200, 'sem a env: tela de login');
+  await withApp(async () => {
+    const r = await app.inject({ method: 'GET', url: '/login?from=app', headers: H });
+    assert.equal(r.statusCode, 302);
+    assert.equal(r.headers.location, `${APP}/sso/exames`);
+    const casos = await call(jwt(claims()));
+    assert.match(casos.body, new RegExp(`class="brand" href="${APP}"`));
+    assert.match(casos.body, /Início · LN Medicina Integrada/);
+    assert.match(casos.body, /href="\/casos"/, 'Casos segue no menu');
+  });
+  const plain = await call(jwt(claims()));
+  assert.match(plain.body, /class="brand" href="\/casos"/);
+  assert.doesNotMatch(plain.body, /Início · LN Medicina Integrada/);
+});
