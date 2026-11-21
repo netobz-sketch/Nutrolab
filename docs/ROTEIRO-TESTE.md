@@ -112,7 +112,18 @@ Endereço: https://nutrolab.srv2086528.hstgr.cloud
 
 ## O que ainda precisa da sua revisão clínica antes do uso real
 
-O sistema calcula e classifica com base na tabela que **você** valida. Hoje:
+O sistema calcula e classifica com base na tabela que **você** valida. Para revisar, abra
+**Referências dos exames**:
+
+- O quadro **Sua revisão** mostra quantas linhas você já conferiu. **Só o que falta** esconde as
+  conferidas.
+- Vá um sistema por vez; o número em cada aba é o que falta naquele sistema. Em cada linha, ajuste a
+  faixa normal e a ótima se precisar e clique em **Conferido**.
+- Se você mudar um valor depois, a marca daquela linha some e ela volta para a lista do que falta.
+- Rascunho não se confere: defina a faixa, ative (ou inative, se não for usar) e clique em
+  **Conferido**.
+
+Hoje:
 
 - **Referências dos exames, 181 linhas ativas.** 142 foram preenchidas a partir de pesquisa
   (nov/2026, a fonte está anotada em cada linha). As outras são faixas por fase do ciclo, contraceptivo,

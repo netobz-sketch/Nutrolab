@@ -434,29 +434,46 @@ export function bandBar(r: Rule, compact = false): string {
   return `<div style="position:relative;height:30px;margin:6px 0 2px">${bar}${marks}</div>`;
 }
 
-export function quickRulesPage(rules: Rule[], system: string | null, query = ''): string {
+/** Linha que ainda pede ação do médico: ativa/inativa sem "Conferido", ou rascunho (falta definir e ativar). */
+export function rulePending(r: Rule): boolean {
+  return r.status === 'rascunho' || !r.checked_at;
+}
+
+export function quickRulesPage(rules: Rule[], system: string | null, query = '', opts: { pendingOnly?: boolean; draftGuidances?: number } = {}): string {
   const groups = new Map<string, Rule[]>();
   const q = query.trim().toLowerCase();
+  const pendingOnly = opts.pendingOnly === true;
   for (const r of rules) {
     if (system && r.system !== system) continue;
+    if (pendingOnly && !rulePending(r)) continue;
     if (q && !(r.exam_canonical.includes(q) || r.aliases.some((a) => a.toLowerCase().includes(q)))) continue;
     groups.set(r.system, [...(groups.get(r.system) ?? []), r]);
   }
-  const tabs = ['', ...Object.keys(SYSTEMS)].map((k) => `<a class="btn ${(system ?? '') === k ? '' : 'sec'} sm" href="/regras${k ? `?sistema=${k}` : ''}">${k ? h(SYSTEMS[k] ?? k) : 'Todos'}</a>`).join('');
+  const pendingIn = (k: string) => rules.filter((r) => (!k || r.system === k) && rulePending(r)).length;
+  const tabHref = (k: string, pend: boolean) => { const p = [k ? `sistema=${k}` : '', pend ? 'pendentes=1' : ''].filter(Boolean).join('&'); return `/regras${p ? `?${p}` : ''}`; };
+  const tabs = ['', ...Object.keys(SYSTEMS)].map((k) => { const n = pendingIn(k); return `<a class="btn ${(system ?? '') === k ? '' : 'sec'} sm" href="${tabHref(k, pendingOnly)}">${k ? h(SYSTEMS[k] ?? k) : 'Todos'}${n ? ` <span class="muted small">· ${n}</span>` : ' <span class="small">✓</span>'}</a>`; }).join('');
+  const action = (r: Rule) => `/regras/${r.id}/rapido${pendingOnly ? '?pendentes=1' : ''}`;
+  const checkedTag = (r: Rule) => r.checked_at ? `<span class="tag revisado" title="Conferido por você">conferido ${fmtDate(r.checked_at.slice(0, 10))}</span>` : '';
   const inp = (name: string, value: number | null, label: string) => `<input name="${name}" type="number" step="any" value="${value ?? ''}" placeholder="—" aria-label="${label}" class="num" style="width:76px;min-height:32px;padding:3px 6px;font-size:13px">`;
-  const row = (r: Rule) => `<form method="post" action="/regras/${r.id}/rapido" class="refrow" id="r${r.id}">
+  const row = (r: Rule) => `<form method="post" action="${action(r)}" class="refrow" id="r${r.id}">
 <input type="hidden" name="critical_low" value="${r.critical_low ?? ''}"><input type="hidden" name="critical_high" value="${r.critical_high ?? ''}">
 ${bandBar(r, true)}
 <div class="refname"><b>${h(r.exam_canonical)}</b> <span class="muted small">${h(r.unit)}${r.sex !== 'todos' ? ` · ${h(r.sex)}` : ''}${r.contexts.some((c) => c !== 'geral') ? ` · ${h(r.contexts.filter((c) => c !== 'geral').join(', '))}` : ''}</span></div>
 <div class="refband"><span class="muted small">Normal</span>${inp('normal_min', r.normal_min, 'normal mínimo')}<span class="muted">–</span>${inp('normal_max', r.normal_max, 'normal máximo')}</div>
 <div class="refband"><span class="muted small">Ótimo</span>${inp('target_min', r.target_min, 'ótimo de')}<span class="muted">até</span>${inp('target_max', r.target_max, 'ótimo até')}</div>
-<div class="refactions"><select name="status" aria-label="status" style="width:auto;min-height:32px;padding:3px 6px;font-size:13px">${['rascunho', 'ativo', 'inativo'].map((x) => option(x, x, r.status)).join('')}</select><button class="btn sm" type="submit">Salvar</button><a class="btn sec sm" href="/regras/${r.id}" title="Aliases, unidade, sexo, idade, contexto, limites críticos, orientações e fonte">Mais</a></div></form>`;
+<div class="refactions"><select name="status" aria-label="status" style="width:auto;min-height:32px;padding:3px 6px;font-size:13px">${['rascunho', 'ativo', 'inativo'].map((x) => option(x, x, r.status)).join('')}</select><button class="btn sec sm" type="submit">Salvar</button><button class="btn sm" type="submit" name="conferir" value="1" title="Salva os valores desta linha e marca como conferida por você">Conferido</button>${checkedTag(r)}<a class="btn sec sm" href="/regras/${r.id}" title="Aliases, unidade, sexo, idade, contexto, limites críticos, orientações e fonte">Mais</a></div></form>`;
   const body = [...groups.entries()].map(([sys, rs]) => `<h2>${h(SYSTEMS[sys] ?? sys)} <span class="muted small">(${rs.length})</span></h2><div class="card flush" style="padding:4px 0">${rs.map(row).join('')}</div>`).join('');
   const active = rules.filter((r) => r.status === 'ativo').length;
+  const usable = rules.filter((r) => r.status !== 'rascunho');
+  const checked = usable.filter((r) => r.checked_at).length;
+  const drafts = rules.length - usable.length;
+  const pct = usable.length ? Math.round((checked / usable.length) * 100) : 0;
+  const progress = `<div class="card" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center"><div style="flex:1 1 260px;min-width:0"><b>Sua revisão: ${checked} de ${usable.length} linhas conferidas</b><div style="height:8px;background:var(--line2);border-radius:4px;margin-top:6px;overflow:hidden" role="progressbar" aria-valuemin="0" aria-valuemax="${usable.length}" aria-valuenow="${checked}" aria-label="Linhas conferidas"><div style="height:100%;width:${pct}%;background:#2f7d4f"></div></div><div class="muted small" style="margin-top:6px">Confira um sistema por vez: ajuste o valor se precisar e clique em <b>Conferido</b>. Mudar um valor depois apaga a marca daquela linha.</div></div><div class="small">${drafts ? `<div>${drafts} em rascunho: defina a faixa e ative (ou inative)</div>` : ''}${opts.draftGuidances ? `<div>${opts.draftGuidances} orientação(ões) em rascunho: <a href="/orientacoes">reescrever ou excluir</a></div>` : ''}</div><div><a class="btn ${pendingOnly ? '' : 'sec'} sm" href="${tabHref(system ?? '', !pendingOnly)}">${pendingOnly ? 'Mostrar tudo' : 'Só o que falta'}</a></div></div>`;
   return `<div class="pagehead"><div><div class="crumbs">Configuração clínica</div><h1>Referências dos exames</h1><div class="sub">${rules.length} linhas, ${active} ativas. Barra: vermelho = crítico, âmbar = normal fora do ótimo, verde = ótimo. Normal vazio usa a referência do laudo; limites críticos ficam em "Mais". Só linhas <b>ativas</b> classificam e pontuam.</div></div><div class="actions"><a class="btn sec" href="/regras/lista">Tabela completa e CSV</a><a class="btn sec" href="/regras/nova">Nova regra</a></div></div>
-<form method="get" action="/regras" class="actions" style="margin-bottom:10px"><input type="search" name="q" value="${attr(query)}" placeholder="Buscar exame (ex.: ferritina, TSH, vitamina)" style="max-width:360px">${system ? `<input type="hidden" name="sistema" value="${attr(system)}">` : ''}<button class="btn sec" type="submit">Buscar</button>${q ? '<a class="btn sec" href="/regras">Limpar</a>' : ''}</form>
+<form method="get" action="/regras" class="actions" style="margin-bottom:10px"><input type="search" name="q" value="${attr(query)}" placeholder="Buscar exame (ex.: ferritina, TSH, vitamina)" style="max-width:360px">${system ? `<input type="hidden" name="sistema" value="${attr(system)}">` : ''}${pendingOnly ? '<input type="hidden" name="pendentes" value="1">' : ''}<button class="btn sec" type="submit">Buscar</button>${q ? '<a class="btn sec" href="/regras">Limpar</a>' : ''}</form>
+${progress}
 <div class="actions" style="margin-bottom:14px">${tabs}</div>
-${body || '<div class="card muted">Nenhum exame encontrado.</div>'}`;
+${body || `<div class="card muted">${pendingOnly ? 'Nada pendente aqui. ✓' : 'Nenhum exame encontrado.'}</div>`}`;
 }
 
 export interface ReportListRow { analysis_id: number; case_id: number; patient_code: string; patient_name: string; score: number | null; created_at: string; finalized_at: string | null; ai_used: boolean }

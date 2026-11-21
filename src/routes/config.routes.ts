@@ -91,31 +91,41 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
 
   /* ---------------------------------------------------------------- regras */
   app.get('/regras', async (request, reply) => {
-    const q = request.query as { sistema?: string; q?: string };
+    const q = request.query as { sistema?: string; q?: string; pendentes?: string };
     const sys = q.sistema ?? null;
-    return page(request, reply, 'Referências dos exames', quickRulesPage((await allRules()), sys && sys in SYSTEMS ? sys : null, (q.q ?? '').slice(0, 60)));
+    const draftGuidances = (await allGuidances()).filter((g) => g.status === 'rascunho').length;
+    return page(request, reply, 'Referências dos exames', quickRulesPage((await allRules()), sys && sys in SYSTEMS ? sys : null, (q.q ?? '').slice(0, 60), { pendingOnly: q.pendentes === '1', draftGuidances }));
   });
   app.get('/regras/lista', async (request, reply) => page(request, reply, 'Exames e referências', rulesPage((await allRules()), (await allGuidances()))));
   app.get('/regras/nova', async (request, reply) => page(request, reply, 'Nova regra', ruleFormPage(null, (await allGuidances()), null, calcIds)));
 
   app.get('/regras/rapido', async (request, reply) => reply.redirect(`/regras${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
 
-  const QuickBody = z.object({ critical_low: numOpt, normal_min: numOpt, target_min: numOpt, target_max: numOpt, normal_max: numOpt, critical_high: numOpt, status: z.enum(['ativo', 'rascunho', 'inativo']) });
+  const QuickBody = z.object({ critical_low: numOpt, normal_min: numOpt, target_min: numOpt, target_max: numOpt, normal_max: numOpt, critical_high: numOpt, status: z.enum(['ativo', 'rascunho', 'inativo']), conferir: z.literal('1').optional() });
   app.post('/regras/:id/rapido', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');
     const parsed = QuickBody.safeParse(request.body);
-    const back = (msg: string, kind = 'err') => reply.redirect(`/regras?sistema=${encodeURIComponent(str(row, 'system'))}&kind=${kind}&msg=${encodeURIComponent(msg)}#r${id}`);
+    const q = request.query as { pendentes?: string };
+    const back = (msg: string, kind = 'err') => reply.redirect(`/regras?sistema=${encodeURIComponent(str(row, 'system'))}${q.pendentes === '1' ? '&pendentes=1' : ''}&kind=${kind}&msg=${encodeURIComponent(msg)}#r${id}`);
     if (!parsed.success) return back(`${str(row, 'exam_canonical')}: ${firstIssue(parsed.error)}`);
     const d = parsed.data;
     const seq = [d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high].filter((v): v is number => v !== null);
     for (let i = 1; i < seq.length; i += 1) if ((seq[i] ?? 0) < (seq[i - 1] ?? 0)) return back(`${str(row, 'exam_canonical')}: os valores precisam crescer da esquerda para a direita (crítico ↓ ≤ normal ↓ ≤ ótimo ↓ ≤ ótimo ↑ ≤ normal ↑ ≤ crítico ↑).`);
     if (d.status === 'ativo' && /^exemplo/i.test(str(row, 'clinical_source'))) return back(`${str(row, 'exam_canonical')}: linha de exemplo não pode ser ativada; abra "Completo" e informe a fonte clínica.`);
     if (d.status === 'ativo' && seq.length === 0 && !strOrNull(row, 'target_text')) return back(`${str(row, 'exam_canonical')}: para ativar, informe ao menos uma faixa.`);
-    (await getAsyncDb().prepare("UPDATE rules SET critical_low=?, normal_min=?, target_min=?, target_max=?, normal_max=?, critical_high=?, status=?, reviewed_at=date('now'), updated_by=?, updated_at=datetime('now') WHERE id=?").run(d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high, d.status, request.user?.id ?? null, id));
-    await audit(request.user?.id ?? null, 'editar_rapido', 'rule', id, { before: { cl: numOrNull(row, 'critical_low'), nl: numOrNull(row, 'normal_min'), tl: numOrNull(row, 'target_min'), th: numOrNull(row, 'target_max'), nh: numOrNull(row, 'normal_max'), ch: numOrNull(row, 'critical_high'), status: str(row, 'status') }, after: d }, request.id);
-    return back(`${str(row, 'exam_canonical')} salvo (${d.status}).`, 'ok');
+    const conferir = d.conferir === '1';
+    if (conferir && d.status === 'rascunho') return back(`${str(row, 'exam_canonical')}: rascunho não se confere; ative a linha (ou inative, se não for usar) e clique em Conferido.`);
+    const before = { critical_low: numOrNull(row, 'critical_low'), normal_min: numOrNull(row, 'normal_min'), target_min: numOrNull(row, 'target_min'), target_max: numOrNull(row, 'target_max'), normal_max: numOrNull(row, 'normal_max'), critical_high: numOrNull(row, 'critical_high'), status: str(row, 'status') };
+    const after = { critical_low: d.critical_low, normal_min: d.normal_min, target_min: d.target_min, target_max: d.target_max, normal_max: d.normal_max, critical_high: d.critical_high, status: d.status };
+    const changed = (Object.keys(after) as Array<keyof typeof after>).some((k) => after[k] !== before[k]);
+    // Conferido marca a linha com os valores salvos agora; mudar valor sem conferir apaga a marca antiga.
+    const check = conferir ? "checked_at=datetime('now'), checked_by=?" : changed ? 'checked_at=NULL, checked_by=NULL' : 'checked_by=checked_by';
+    const user = request.user?.id ?? null;
+    (await getAsyncDb().prepare(`UPDATE rules SET critical_low=?, normal_min=?, target_min=?, target_max=?, normal_max=?, critical_high=?, status=?, reviewed_at=date('now'), ${check}, updated_by=?, updated_at=datetime('now') WHERE id=?`).run(...[d.critical_low, d.normal_min, d.target_min, d.target_max, d.normal_max, d.critical_high, d.status, ...(conferir ? [user] : []), user, id]));
+    await audit(user, conferir ? 'conferir_regra' : 'editar_rapido', 'rule', id, { before, after, changed }, request.id);
+    return back(`${str(row, 'exam_canonical')} ${conferir ? 'conferido' : 'salvo'} (${d.status}).`, 'ok');
   });
 
   /* -------------------------------------------------------------- fórmulas */
@@ -310,7 +320,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const params = [r.exam_canonical, aliases, r.sex, r.age_min, r.age_max, contexts, r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null];
     let ruleId = id;
     if (id) {
-      (await getAsyncDb().prepare("UPDATE rules SET exam_canonical=?, aliases=?, sex=?, age_min=?, age_max=?, contexts=?, unit=?, target_min=?, target_max=?, target_text=?, critical_low=?, critical_high=?, guidance_ids=?, clinical_source=?, version=?, reviewed_at=?, status=?, system=?, normal_min=?, normal_max=?, updated_by=?, updated_at=datetime('now') WHERE id=?").run(...params, id));
+      (await getAsyncDb().prepare("UPDATE rules SET exam_canonical=?, aliases=?, sex=?, age_min=?, age_max=?, contexts=?, unit=?, target_min=?, target_max=?, target_text=?, critical_low=?, critical_high=?, guidance_ids=?, clinical_source=?, version=?, reviewed_at=?, status=?, system=?, normal_min=?, normal_max=?, updated_by=?, checked_at=NULL, checked_by=NULL, updated_at=datetime('now') WHERE id=?").run(...params, id));
     } else {
       const info = (await getAsyncDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(...params));
       ruleId = Number(info.lastInsertRowid);
@@ -334,7 +344,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     const insert = (await getAsyncDb().prepare('INSERT INTO rules(exam_canonical, aliases, sex, age_min, age_max, contexts, unit, target_min, target_max, target_text, critical_low, critical_high, guidance_ids, clinical_source, version, reviewed_at, status, system, normal_min, normal_max, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'));
     let imported = 0;
     const errors: string[] = [];
-    parseCsv(text).forEach((row, i) => {
+    for (const [i, row] of parseCsv(text).entries()) {
       const line = i + 2;
       const parsed = RuleBody.safeParse({
         exam_canonical: str(row, 'exame_canonico'), aliases: str(row, 'aliases').split('|').join(' | '), sex: str(row, 'sexo') || 'todos',
@@ -346,17 +356,17 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!parsed.success) {
         errors.push(`linha ${line}: ${firstIssue(parsed.error)}`);
-        return;
+        continue;
       }
       const r = parsed.data;
       const unknown = r.guidance_ids.filter((g) => !known.has(g));
       if (unknown.length) {
         errors.push(`linha ${line}: orientação inexistente ${unknown.join(', ')}`);
-        return;
+        continue;
       }
-      insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null);
+      await insert.run(r.exam_canonical, r.aliases.split('|').map((a) => a.trim()).filter(Boolean).join('|'), r.sex, r.age_min, r.age_max, r.contexts.length ? r.contexts.join('|') : 'geral', r.unit, r.target_min, r.target_max, r.target_text || null, r.critical_low, r.critical_high, r.guidance_ids.join('|'), r.clinical_source, r.version, r.reviewed_at, r.status, r.system, r.normal_min, r.normal_max, request.user?.id ?? null);
       imported += 1;
-    });
+    }
     await audit(request.user?.id ?? null, 'importar', 'rule', null, { imported, rejected: errors.length, errors: errors.slice(0, 20) }, request.id);
     const msg = `${imported} regra(s) importada(s).${errors.length ? ` ${errors.length} rejeitada(s): ${errors.slice(0, 5).join(' · ')}` : ''}`;
     return reply.redirect(`/regras/lista?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);

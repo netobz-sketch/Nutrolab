@@ -15,6 +15,7 @@ delete process.env.GOTRUE_JWT_SECRET;
 
 const { buildApp } = await import('../src/app.js');
 const { fakeDocx } = await import('./docx.test.js');
+const { getAsyncDb } = await import('../src/db.js');
 const app = await buildApp();
 const H = { host: 'localhost', origin: 'http://localhost' };
 let cookie = '';
@@ -272,6 +273,38 @@ test('ajuste rápido das referências: ordem validada, barra renderizada, ativa�
   assert.equal(previa[0]?.classification, 'abaixo_do_alvo');
 });
 
+test('revisão médica das referências: Conferido marca, mudar valor apaga, rascunho não se confere, filtro do que falta', async () => {
+  const values = { critical_low: '10', normal_min: '30', target_min: '40', target_max: '80', normal_max: '100', critical_high: '150', status: 'ativo' };
+  const checkedAt = async (id: number) => ((await getAsyncDb().prepare('SELECT checked_at, checked_by FROM rules WHERE id = ?').get(id)) as { checked_at: string | null; checked_by: number | null });
+  const before = await get('/regras');
+  const total = Number(/Sua revisão: (\d+) de (\d+)/.exec(before.body)?.[2]);
+  assert.match(before.body, /Sua revisão: 0 de \d+ linhas conferidas/);
+  assert.match(before.body, /name="conferir" value="1"/);
+
+  const conf = await post('/regras/1/rapido?pendentes=1', { ...values, conferir: '1' });
+  assert.match(conf.headers.location ?? '', /pendentes=1&kind=ok&msg=[^#]*conferido/);
+  const c1 = await checkedAt(1);
+  assert.ok(c1.checked_at, 'Conferido grava a data');
+  assert.ok(c1.checked_by, 'e quem conferiu');
+  const after = await get('/regras');
+  assert.match(after.body, new RegExp(`Sua revisão: 1 de ${total} linhas conferidas`));
+  assert.match(after.body, /conferido \d{2}\/\d{2}\/\d{4}/);
+  const pend = await get('/regras?pendentes=1');
+  assert.doesNotMatch(pend.body, /id="r1"/, 'conferida sai do filtro do que falta');
+  assert.match(pend.body, /Mostrar tudo/);
+
+  await post('/regras/1/rapido', values);
+  assert.ok((await checkedAt(1)).checked_at, 'salvar sem mudar nada mantém a marca');
+  await post('/regras/1/rapido', { ...values, target_max: '85' });
+  assert.equal((await checkedAt(1)).checked_at, null, 'mudar um valor apaga a marca');
+
+  const draft = await post('/regras/1/rapido', { ...values, status: 'rascunho', conferir: '1' });
+  assert.match(decodeURIComponent(draft.headers.location ?? ''), /rascunho não se confere/);
+  assert.equal((await checkedAt(1)).checked_at, null);
+  await post('/regras/1/rapido', { ...values, target_max: '80', conferir: '1' });
+  assert.ok((await checkedAt(1)).checked_at);
+});
+
 test('aba Relatórios: lista e configuração entram no relatório', async () => {
   const list = await get('/relatorios');
   assert.equal(list.statusCode, 200);
@@ -471,7 +504,6 @@ test('/casos: coluna Origem e link ao prontuário do LN só com LN_EVOLUTION_PUB
   assert.equal(lnPatientUrl(null, 'abc-123'), null);
   assert.equal(lnPatientUrl('https://ln.example.com', null), null);
 
-  const { getAsyncDb } = await import('../src/db.js');
   await getAsyncDb().prepare("UPDATE cases SET origin = 'ln', ln_patient_id = 'abc-123' WHERE id = 1").run();
   const saved = process.env.LN_EVOLUTION_PUBLIC_URL;
   try {

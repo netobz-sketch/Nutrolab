@@ -217,6 +217,10 @@ const MIGRATIONS: Array<[table: string, column: string, ddl: string]> = [
   // Origem do caso: 'manual' (tela) ou 'ln' (API de integração); ln_patient_id = id do paciente no LN Evolution, para o link de volta ao prontuário.
   ['cases', 'origin', "TEXT NOT NULL DEFAULT 'manual'"],
   ['cases', 'ln_patient_id', 'TEXT'],
+  // Conferência explícita do médico, linha a linha (botão "Conferido"). Diferente de reviewed_at,
+  // que veio preenchido pela pesquisa inicial. Qualquer mudança de valor depois apaga a marca.
+  ['rules', 'checked_at', 'TEXT'],
+  ['rules', 'checked_by', 'INTEGER'],
 ];
 
 const EXTRA_SCHEMA = `
@@ -401,6 +405,7 @@ export function rowToRule(row: Row): Rule {
     version: str(row, 'version'),
     reviewed_at: str(row, 'reviewed_at'),
     status: str(row, 'status') as Status,
+    checked_at: strOrNull(row, 'checked_at'),
   };
 }
 

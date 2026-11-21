@@ -103,6 +103,8 @@ export interface Rule {
   version: string;
   reviewed_at: string;
   status: Status;
+  /** Quando o médico clicou em "Conferido" nesta linha; null = ainda não conferida. */
+  checked_at?: string | null;
 }
 
 export interface Guidance {
