@@ -25,12 +25,13 @@ Endereço: https://nutrolab.srv2086528.hstgr.cloud
       esse aviso com o link para lá; o formulário que fica abaixo muda só a **senha local de
       emergência**, usada no login profissional e quando o acesso central estiver fora do ar. Mantenha
       essa senha local forte e guardada.
-- [ ] **Logo depois da atualização da senha única:** quando o Claude avisar que publicou, entre no
-      NutroLab com seu e-mail e a senha única e diga se entrou. Se aparecer "Seu perfil não tem
-      acesso" ou "E-mail ou senha incorretos" com a senha certa, avise na hora: o Claude volta a
-      versão anterior em segundos e você continua entrando com a senha antiga do NutroLab.
-- [ ] **Login único com o LN Evolution:** quando o LN publicar o login único, entrar no LN deve
-      bastar para abrir o NutroLab sem pedir senha de novo. Até lá, este item fica pendente.
+- [ ] **Entrar sem senha pelo sistema integrado:** em app.lnmedicinaintegrada.com.br, já logado,
+      clique em **Exames**. O NutroLab deve abrir direto em **Casos**, sem pedir senha.
+- [ ] **Voltar ao início:** no NutroLab, clique no logo (ou em **Início · LN Medicina Integrada**, no
+      topo do menu). Você volta à página inicial do sistema integrado. **Casos** continua no menu.
+- [ ] Se o clique em Exames ficar parado em "Abrindo Exames…" ou cair na tela de login com o aviso
+      "Não deu para entrar direto pelo sistema integrado", entre com e-mail e senha normalmente e
+      avise o Claude com a hora.
 
 ## 2. Cadastrar o paciente
 
