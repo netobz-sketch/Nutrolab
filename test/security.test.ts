@@ -119,7 +119,9 @@ test('IA recebe a idade em anos, nunca a data de nascimento', () => {
   assert.equal(ageInYears(null), null);
   assert.equal(ageInYears('15/06/1980'), null);
   assert.equal(ageInYears('2030-01-01', '2026-01-01'), null, 'nascimento no futuro');
-  const src = fs.readFileSync(path.resolve('src/routes/cases.routes.ts'), 'utf8');
+  // O módulo ao lado deste teste: .ts no tsx local, .js compilado no container do ensaio.
+  const ext = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+  const src = fs.readFileSync(new URL(`../src/routes/cases.routes.${ext}`, import.meta.url), 'utf8');
   const payload = src.slice(src.indexOf('function reportPayload('), src.indexOf('function pickMarkdown('));
   assert.match(payload, /idade_anos: ageInYears\(c\.birth_date\)/);
   assert.doesNotMatch(payload, /nascimento|birth_date(?!\))/);
