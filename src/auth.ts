@@ -12,6 +12,8 @@ export interface SessionUser {
   council_number: string | null;
   council_state: string | null;
   profession: string | null;
+  /** vínculo com a conta central (GoTrue); com ele, o e-mail só muda lá */
+  gotrue_sub: string | null;
   /** versão da senha: muda quando a senha muda, invalidando sessões antigas */
   pwv: string;
 }
@@ -53,8 +55,9 @@ function sign(payload: string): string {
   return crypto.createHmac('sha256', secret).update(payload).digest('base64url');
 }
 
-export function createSessionToken(user: SessionUser): string {
-  const payload = Buffer.from(JSON.stringify({ u: user.id, v: user.pwv, e: Date.now() + SESSION_HOURS * 3600 * 1000 })).toString('base64url');
+/** `expiresAtMs`: fim da sessão; sem ele, 12 h (senha local). Sessão do GoTrue passa o `exp` do token. */
+export function createSessionToken(user: SessionUser, expiresAtMs?: number): string {
+  const payload = Buffer.from(JSON.stringify({ u: user.id, v: user.pwv, e: expiresAtMs ?? Date.now() + SESSION_HOURS * 3600 * 1000 })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
@@ -73,12 +76,12 @@ export function readSessionToken(token: string | undefined): { userId: number; p
   }
 }
 
-const USER_COLS = 'id, email, name, role, password_hash, cpf, council, council_number, council_state, profession';
+const USER_COLS = 'id, email, name, role, password_hash, cpf, council, council_number, council_state, profession, gotrue_sub';
 
 function rowToUser(row: Row): SessionUser {
   return {
     id: num(row, 'id'), email: str(row, 'email'), name: str(row, 'name'), role: str(row, 'role') as SessionUser['role'],
-    cpf: strOrNull(row, 'cpf'), council: strOrNull(row, 'council'), council_number: strOrNull(row, 'council_number'), council_state: strOrNull(row, 'council_state'), profession: strOrNull(row, 'profession'),
+    cpf: strOrNull(row, 'cpf'), council: strOrNull(row, 'council'), council_number: strOrNull(row, 'council_number'), council_state: strOrNull(row, 'council_state'), profession: strOrNull(row, 'profession'), gotrue_sub: strOrNull(row, 'gotrue_sub'),
     pwv: passwordVersion(str(row, 'password_hash')),
   };
 }

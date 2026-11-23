@@ -221,6 +221,8 @@ const MIGRATIONS: Array<[table: string, column: string, ddl: string]> = [
   // que veio preenchido pela pesquisa inicial. Qualquer mudança de valor depois apaga a marca.
   ['rules', 'checked_at', 'TEXT'],
   ['rules', 'checked_by', 'INTEGER'],
+  // Vínculo com a conta central (GoTrue `sub`), gravado no primeiro login por SSO ("bind on first use").
+  ['users', 'gotrue_sub', 'TEXT'],
 ];
 
 const EXTRA_SCHEMA = `
@@ -240,6 +242,7 @@ CREATE TABLE IF NOT EXISTS conduct_items (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_conduct_case ON conduct_items(case_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_gotrue_sub ON users(gotrue_sub);
 CREATE TABLE IF NOT EXISTS patients (
   id INTEGER PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,

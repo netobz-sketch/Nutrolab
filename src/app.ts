@@ -3,7 +3,7 @@ import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
 import { bootstrapAdmin, COOKIE_NAME, sessionUser } from './auth.js';
-import { userFromBearer } from './sso.js';
+import { readGotrueConfig, userFromBearer } from './sso.js';
 import { aiEnabled, AI_MODEL } from './ai.js';
 import { closeDbConnection, openDb } from './db.js';
 import { authRoutes } from './routes/auth.routes.js';
@@ -12,12 +12,20 @@ import { configRoutes } from './routes/config.routes.js';
 import { patientsRoutes } from './routes/patients.routes.js';
 import { integrationRoutes } from './integration.js';
 import { invalidIdParam } from './route-ids.js';
+import { serializeRequest } from './log-redact.js';
 
 const ALLOWED_HOSTS = (process.env.ALLOWED_HOSTS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
 export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
+// Com GOTRUE_JWT_SECRET, GOTRUE_ISSUER e NUTROLAB_ORG_ID são obrigatórias: sem elas o app não sobe.
+readGotrueConfig();
 const app = Fastify({
-  logger: { level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.cookie', 'req.headers.authorization'] },
+  logger: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    redact: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-integration-token"]'],
+    // Query string mascarada (lista de permitidos) e token de redefinição fora do caminho.
+    serializers: { req: serializeRequest },
+  },
   bodyLimit: 1024 * 1024,
   trustProxy: true,
 });
@@ -59,7 +67,7 @@ app.addHook('onRequest', async (request, reply) => {
     const sso = await userFromBearer(request.headers.authorization);
     if (sso && !sso.ok) {
       request.log.warn({ reason: sso.reason }, 'sso recusado');
-      return reply.code(sso.status).type('application/json').send({ error: { code: sso.status === 401 ? 'unauthorized' : 'forbidden', message: sso.reason } });
+      return reply.code(sso.status).type('application/json').send({ error: { code: sso.code ?? (sso.status === 401 ? 'unauthorized' : 'forbidden'), message: sso.reason } });
     }
     if (sso?.ok) request.user = sso.user;
   }

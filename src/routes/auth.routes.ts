@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { authenticate, authenticateProfessional, consumeReset, updateProfile, COOKIE_NAME, createResetToken, createSessionToken, findUserByEmail, findUserById, findValidReset, loginAllowed, loginSucceeded, requireAuth, resetAllowed, setPassword } from '../auth.js';
 import { audit, BRAND_DIR, getAsyncDb, type Row } from '../db.js';
-import { gotruePasswordConfigured, gotruePasswordLogin, ssoEnabled, userFromClaims, verifyGotrueJwt } from '../sso.js';
+import { gotruePasswordConfigured, gotruePasswordLogin, readGotrueConfig, ssoEnabled, ssoSessionExpiry, userFromClaims, verifyGotrueJwt } from '../sso.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { appUrl, mailEnabled, sendResetEmail } from '../mail.js';
@@ -32,6 +32,11 @@ export function safeNext(next: string | undefined): string {
   return typeof next === 'string' && /^\/(?![/\\])[^\\\u0000-\u001f]*$/.test(next) ? next : '/casos';
 }
 
+
+/** maxAge do cookie (s) para um fim de sessão em ms; sem ele, 12 h. */
+function cookieMaxAge(expiresAtMs: number | undefined): number {
+  return expiresAtMs === undefined ? 12 * 3600 : Math.max(0, Math.floor((expiresAtMs - Date.now()) / 1000));
+}
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // Fonte Inter servida localmente (design LN), pública e imutável.
@@ -71,6 +76,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     let who = '';
     let next: string | undefined;
     let via: 'gotrue' | 'local' | 'local_fallback' | 'profissional' = 'profissional';
+    // Sessão do GoTrue dura o exp do token; as locais, 12 h.
+    let expiresAtMs: number | undefined;
     if (mode === 'profissional') {
       const parsed = ProLoginBody.safeParse(body);
       if (!parsed.success) return render('Informe nome, CPF, número do conselho e senha.');
@@ -92,6 +99,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const sso = await gotruePasswordLogin(parsed.data.email, parsed.data.password);
       if (sso.kind === 'ok') {
         user = sso.user;
+        expiresAtMs = sso.expiresAtMs;
         via = 'gotrue';
       } else if (sso.kind === 'denied') {
         await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: 'gotrue', motivo: sso.reason }, request.id);
@@ -109,12 +117,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const parsedNext = next;
     loginSucceeded(request.ip);
     await audit(user.id, 'login', 'user', user.id, { ip: request.ip, modo: mode, via }, request.id);
-    reply.setCookie(COOKIE_NAME, createSessionToken(user), {
+    reply.setCookie(COOKIE_NAME, createSessionToken(user, expiresAtMs), {
       path: '/',
       httpOnly: true,
       sameSite: 'strict',
       secure: process.env.NODE_ENV === 'production',
-      maxAge: 12 * 3600,
+      maxAge: cookieMaxAge(expiresAtMs),
     });
     const incomplete = !user.cpf || !user.council_number;
     return reply.redirect(incomplete && mode === 'email' ? '/perfil?kind=warn&msg=' + encodeURIComponent('Complete seu cadastro profissional (CPF e conselho) para entrar pela tela profissional.') : safeNext(parsedNext));
@@ -123,14 +131,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   /**
    * Passagem de sessão do sistema integrado (contrato: PLANO-LN-MEDICINA-INTEGRADA §9).
    * O financeiro posta access_token + return (+ retry=1 na segunda tentativa) por formulário;
-   * validamos o JWT como no Bearer, emitimos o nl_session normal (12 h, sem renovação pelo
-   * GoTrue) e seguimos para `return` (só caminho interno). Nenhum token vai para URL, log ou
+   * validamos o JWT como no Bearer, emitimos o nl_session até o exp do token (1 h, sem renovação
+   * pelo GoTrue; para continuar, o clique em Exames repassa um token novo) e seguimos para `return` (só caminho interno). Nenhum token vai para URL, log ou
    * auditoria; refresh_token não é recebido.
    */
   app.post('/sso/callback', async (request, reply) => {
     const broker = integratedAppBase();
-    const secret = process.env.GOTRUE_JWT_SECRET?.trim();
-    if (!broker || !secret) return reply.code(404).send('não encontrado');
+    const config = readGotrueConfig();
+    if (!broker || !config) return reply.code(404).send('não encontrado');
     let originOk = false;
     try {
       originOk = !!request.headers.origin && new URL(request.headers.origin).origin === new URL(broker).origin;
@@ -143,11 +151,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const token = typeof body.access_token === 'string' ? body.access_token.trim() : '';
     const target = safeNext(typeof body.return === 'string' ? body.return : undefined);
     const secure = process.env.NODE_ENV === 'production';
-    const verified = token ? verifyGotrueJwt(token, secret) : { error: 'sem token' };
-    const result = 'error' in verified ? { ok: false as const, status: 401 as const, reason: verified.error } : await userFromClaims(verified.claims);
+    const verified = token ? verifyGotrueJwt(token, config) : { error: 'sem token', status: 401 as const };
+    const result = 'error' in verified ? { ok: false as const, status: verified.status, reason: verified.error } : await userFromClaims(verified.claims);
     if (!result.ok) {
       const who = 'claims' in verified ? (verified.claims.email ?? '').toLowerCase() : '';
-      await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: 'sso_handoff', motivo: result.reason }, request.id);
+      await audit(null, 'login_falhou', 'user', who, { ip: request.ip, modo: 'sso_handoff', motivo: result.reason, ...('code' in result && result.code ? { code: result.code } : {}) }, request.id);
       if (result.status === 403) {
         return reply.code(403).type('text/html; charset=utf-8').send(layout({ title: 'Entrar', user: null, body: loginPage('Seu perfil não tem acesso ao NutroLab. Fale com o administrador.', target, 'email') }));
       }
@@ -158,7 +166,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
     loginSucceeded(request.ip);
     await audit(result.user.id, 'login', 'user', result.user.id, { ip: request.ip, modo: 'email', via: 'sso_handoff' }, request.id);
-    reply.setCookie(COOKIE_NAME, createSessionToken(result.user), { path: '/', httpOnly: true, sameSite: 'strict', secure, maxAge: 12 * 3600 });
+    const expiresAtMs = 'claims' in verified ? ssoSessionExpiry(verified.claims) : Date.now();
+    reply.setCookie(COOKIE_NAME, createSessionToken(result.user, expiresAtMs), { path: '/', httpOnly: true, sameSite: 'strict', secure, maxAge: cookieMaxAge(expiresAtMs) });
     // O cookie é SameSite=Strict: um 302 direto, ainda dentro da navegação vinda do financeiro, chegaria
     // sem ele. A página abaixo segue para o destino como navegação do próprio NutroLab.
     return reply.type('text/html; charset=utf-8').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${attr(target)}"><title>Entrando…</title></head><body><p><a href="${attr(target)}">Continuar para o NutroLab</a></p></body></html>`);
@@ -182,6 +191,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (d.council && !(d.council in COUNCILS)) return render('Conselho inválido.');
     if (d.council_state && !UFS.includes(d.council_state)) return render('UF inválida.');
     if (d.profession && d.profession !== 'medico' && d.profession !== 'nutricionista') return render('Profissão inválida.');
+    // Vinculado à conta central: o e-mail é o de lá e só muda lá (trocar aqui não muda o vínculo).
+    if (user.gotrue_sub && d.email !== user.email.toLowerCase()) return render('Seu e-mail vem do acesso LN Medicina Integrada e só pode ser alterado lá.');
     const clash = (await getAsyncDb().prepare('SELECT id FROM users WHERE (email = ? OR (cpf IS NOT NULL AND cpf = ?)) AND id != ?').get(d.email, cpf, user.id)) as Row | undefined;
     if (clash) return render('E-mail ou CPF já usado por outro usuário.');
     await updateProfile(user.id, { name: d.name, email: d.email, cpf, council: d.council || null, council_number: d.council_number ? normalizeCouncilNumber(d.council_number) : null, council_state: d.council_state || null, profession: d.profession || null });

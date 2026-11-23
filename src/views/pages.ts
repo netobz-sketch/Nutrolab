@@ -68,7 +68,7 @@ export function profilePage(user: SessionUser | null, error: string | null, coun
 ${error ? `<div class="flash err">${h(error)}</div>` : ''}
 <form method="post" action="/perfil" class="card"><div class="grid">
 <div><label>Nome completo (como no conselho)</label><input name="name" required value="${attr(u?.name ?? '')}"></div>
-<div><label>E-mail</label><input name="email" type="email" required value="${attr(u?.email ?? '')}"></div>
+<div><label>E-mail</label><input name="email" type="email" required value="${attr(u?.email ?? '')}"${u?.gotrue_sub ? ' readonly title="Vem do acesso LN Medicina Integrada; altere lá."' : ''}></div>
 <div><label>CPF</label><input name="cpf" inputmode="numeric" value="${attr(formatCpf(u?.cpf ?? null))}" placeholder="000.000.000-00"></div>
 <div><label>Profissão</label><select name="profession">${option('', 'não informada', u?.profession ?? '')}${option('medico', 'Médico(a)', u?.profession ?? '')}${option('nutricionista', 'Nutricionista', u?.profession ?? '')}</select></div>
 <div><label>Conselho</label><select name="council">${option('', 'não informado', u?.council ?? '')}${Object.entries(councils).map(([k, l]) => option(k, l, u?.council ?? '')).join('')}</select></div>
