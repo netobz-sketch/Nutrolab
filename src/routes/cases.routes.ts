@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { requireAuth, requireAdmin } from '../auth.js';
-import { AiError, AI_MODEL, aiEnabled, extractFromFile, suggestConduct, suggestFormulas, writeReports, type Reports } from '../ai.js';
+import { AiError, AI_MODEL, aiConsentGiven, aiEnabled, extractFromFile, NO_AI_CONSENT, suggestConduct, suggestFormulas, writeReports, type Reports } from '../ai.js';
 import { allFormulas, allGuidances, allRules, audit, enabledCalcIds, getAsyncDb, list, num, numOrNull, reportSettings, setSetting, str, strOrNull, tableVersion, UPLOAD_DIR, type Formula, type Row } from '../db.js';
 import { applicableGuidances, COMPLAINTS, computeDerived, computeScore, CONTEXTS, evaluateAll, evaluateResult, gaugeSvg, type Evaluation, type PatientProfile, type ResultInput } from '../engine/index.js';
 import { renderMarkdown } from '../markdown.js';
@@ -226,9 +226,20 @@ function scoreFromRow(row: Row): Score | null {
   }
 }
 
+/** Idade em anos completos hoje (America/Sao_Paulo). A IA recebe a idade, nunca a data de nascimento. */
+export function ageInYears(birthDate: string | null, today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })): number | null {
+  const b = birthDate && /^(\d{4})-(\d{2})-(\d{2})$/.exec(birthDate);
+  const t = /^(\d{4})-(\d{2})-(\d{2})$/.exec(today);
+  if (!b || !t) return null;
+  const [by, bm, bd] = [Number(b[1]), Number(b[2]), Number(b[3])];
+  const [ty, tm, td] = [Number(t[1]), Number(t[2]), Number(t[3])];
+  const age = ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
+  return age >= 0 && age < 130 ? age : null;
+}
+
 function reportPayload(c: CaseRow, profile: PatientProfile, evals: Evaluation[], derived: ReturnType<typeof computeDerived>, guidances: ReturnType<typeof applicableGuidances>, score: Score) {
   return {
-    paciente: { codigo: c.patient_code, sexo: c.sex, nascimento: c.birth_date, menopausa: c.menopause || null, fase_do_ciclo: c.cycle_phase || null, anticoncepcional: c.contraceptive || null, trh: c.hrt === 'sim', contextos: [...profile.contexts], queixas: c.complaints.map((k) => COMPLAINTS[k] ?? k), comorbidades: c.comorbidities, medicamentos: c.medications, suplementos: c.supplements, objetivo: c.goal, observacoes_do_medico: c.ai_notes },
+    paciente: { codigo: c.patient_code, sexo: c.sex, idade_anos: ageInYears(c.birth_date), menopausa: c.menopause || null, fase_do_ciclo: c.cycle_phase || null, anticoncepcional: c.contraceptive || null, trh: c.hrt === 'sim', contextos: [...profile.contexts], queixas: c.complaints.map((k) => COMPLAINTS[k] ?? k), comorbidades: c.comorbidities, medicamentos: c.medications, suplementos: c.supplements, objetivo: c.goal, observacoes_do_medico: c.ai_notes },
     score: { total: score.total, por_sistema: score.bySystem },
     resultados: evals.map((e) => ({ sistema: e.rule?.system ?? 'outros', exame: e.exam_canonical ?? e.result.exam_raw, valor: e.result.value_raw, unidade: e.result.unit_raw, referencia_lab: e.result.lab_reference, sinal_lab: e.result.lab_flag, normalidade: e.normality, alvo: e.rule ? { min: e.rule.target_min, max: e.rule.target_max, texto: e.rule.target_text, unidade: e.rule.unit } : null, classificacao: e.classification, critico: e.critical, data: e.result.collection_date, confianca: e.result.confidence, notas: e.notes })),
     calculos: derived.map((d) => ({ indice: d.name, valor: d.value, motivo: d.reason, data: d.collection_date })),
@@ -352,7 +363,8 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     const results = await loadResults(id);
     const { evals } = (await evaluateCase(c, results));
     const analyses = await loadAnalyses(id);
-    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: await loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: (await tableVersion()), examOptions: [...new Set((await allRules()).map((r) => r.exam_canonical))].sort() }));
+    const noConsent = aiEnabled() && !(await aiConsentGiven(id)) ? { kind: 'warn' as const, text: NO_AI_CONSENT } : null;
+    return page(request, reply, `Caso ${c.patient_code}`, casePage({ c, files: await loadFiles(id), results, evals, analyses, aiOn: aiEnabled(), isAdmin: request.user?.role === 'admin', tableVersion: (await tableVersion()), examOptions: [...new Set((await allRules()).map((r) => r.exam_canonical))].sort() }), (request.query as { msg?: string }).msg ? null : noConsent);
   });
 
   app.get('/casos/:id/editar', async (request, reply) => {

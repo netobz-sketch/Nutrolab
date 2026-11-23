@@ -18,6 +18,24 @@ function getClient(): Anthropic {
 
 export class AiError extends Error {}
 
+export const NO_AI_CONSENT = 'Paciente sem termo de IA assinado: a IA não lê nem redige nada deste caso. Lance os resultados à mão ou registre o termo assinado na ficha do paciente.';
+
+/** Termo do paciente do caso permite IA? Só `assinado` (manual: ficha do NutroLab; vindo do LN: termo ia_clinica empurrado pelo LN). */
+export async function aiConsentGiven(caseId: number): Promise<boolean> {
+  const row = (await getAsyncDb().prepare('SELECT p.consent_status FROM cases c JOIN patients p ON p.id = c.patient_id WHERE c.id = ?').get(caseId)) as { consent_status?: unknown } | undefined;
+  return row?.consent_status === 'assinado';
+}
+
+/**
+ * Cliente para as chamadas com dado do paciente (extração, relatórios, conduta, fórmulas).
+ * Trava dura: sem termo assinado não há chamada, seja qual for a rota que pediu.
+ */
+async function clinicalClient(caseId: number): Promise<Anthropic> {
+  const anthropic = getClient();
+  if (!(await aiConsentGiven(caseId))) throw new AiError(NO_AI_CONSENT);
+  return anthropic;
+}
+
 /* ------------------------------------------------------------ extração */
 
 export const ExtractionSchema = z.object({
@@ -54,7 +72,7 @@ Regras invioláveis:
 export type FileMime = 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
 
 export async function extractFromFile(file: Buffer, mime: FileMime, catalog: Array<{ exam: string; aliases: string[] }>, caseId: number): Promise<Extraction> {
-  const anthropic = getClient();
+  const anthropic = await clinicalClient(caseId);
   const catalogText = catalog.map((c) => `- ${c.exam}: ${c.aliases.join(' | ') || '(sem aliases)'}`).join('\n');
   const data = file.toString('base64');
   const fileBlock: Anthropic.ContentBlockParam =
@@ -119,7 +137,7 @@ Regras:
 Cada campo é texto corrido (sem markdown).`;
 
 export async function writeReports(payload: unknown, caseId: number): Promise<Reports> {
-  const anthropic = getClient();
+  const anthropic = await clinicalClient(caseId);
   try {
     const response = await anthropic.messages.parse({
       model: AI_MODEL,
@@ -164,7 +182,7 @@ Como trabalhar:
 Responda SOMENTE com um JSON válido no formato {"itens":[{"tipo","titulo","justificativa","exames":[],"fontes":[]}],"pesquisa_openevidence":""}, sem texto antes ou depois e sem cercas de código.`;
 
 export async function suggestConduct(payload: unknown, caseId: number): Promise<{ conduct: Conduct; searches: number }> {
-  const anthropic = getClient();
+  const anthropic = await clinicalClient(caseId);
   try {
     // Passo 1: pesquisa + rascunho em texto livre (com ferramenta de busca).
     const research = await anthropic.messages.create({
@@ -251,7 +269,7 @@ const FORMULA_SUGGEST_SYSTEM = `Você é assistente de um médico nutrólogo. Re
 - Não sugira item para achado dentro do alvo. Se nada do banco se aplica, devolva lista vazia e explique em "observacao".`;
 
 export async function suggestFormulas(payload: unknown, caseId: number): Promise<FormulaSuggestions> {
-  const anthropic = getClient();
+  const anthropic = await clinicalClient(caseId);
   try {
     const response = await anthropic.messages.parse({
       model: AI_MODEL,

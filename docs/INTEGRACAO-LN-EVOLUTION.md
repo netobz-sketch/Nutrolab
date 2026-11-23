@@ -20,6 +20,9 @@ paciente. Se o LN enviar outro identificador (código de laboratório, id intern
 - **v2.1** (19/11/2026): `GET /patients/:code/summary-for-report` (resumo mínimo para o PDF do LN), campo opcional
   `lnPatientId` em `POST /cases` (link de volta ao prontuário na tela /casos), destaques com o nome sempre redigido.
   Compatível: nada da v2 mudou de forma; só campos e rotas novos.
+- **v2.2** (23/11/2026): termo `ia_clinica` do LN como fonte do consentimento de IA para paciente vindo de lá: campo
+  opcional `consentIaClinica` (+ `consentVersion`) em `POST /cases` e rota nova `PATCH /patients/:code/consent`.
+  Compatível: sem o campo nada muda (o paciente segue `pendente`, e a IA não roda nele).
 
 ## Nome do paciente
 `cases.patient_name` existe no NutroLab e aparece nos relatórios. A integração **nunca o devolve**: o DTO não tem o campo e
@@ -47,6 +50,14 @@ timestamps ISO. Limite: 120 req/min por token.
   **v2.1** `lnPatientId` (opcional): id do paciente **no LN Evolution** (letras, números, `_` e `-`, até 64), usado só para o
   link "prontuário" na tela /casos do NutroLab (`${LN_EVOLUTION_PUBLIC_URL}/pacientes/<lnPatientId>`; sem a variável ou sem o id,
   o link não aparece). Formato inválido → 400 `VALIDATION`. Casos criados antes da v2.1 ficam com origem LN, mas sem link.
+  **v2.2** `consentIaClinica` (opcional): `'aceito' | 'pendente' | 'recusado' | 'revogado'`, estado do termo `ia_clinica`
+  do paciente no LN; `consentVersion` (opcional, letras, números, `.` e `-`, até 20), ex.: `"1.0"`. Grava no paciente
+  `consent_status` (`aceito` → `assinado`; os outros iguais) e `consent_method = 'ln:ia_clinica v<versão>'`. Sem o campo, o
+  termo já gravado não muda. Auditoria `integ_consent`.
+- **v2.2** `PATCH /api/integration/patients/:code/consent` `{ consentIaClinica, consentVersion? }` → `200 { data: { patientCode,
+  consentStatus } }`. O LN chama ao aceitar, recusar ou **revogar** o termo; a trava da IA no NutroLab (extração, relatórios,
+  conduta e fórmulas só com `assinado`) segue o novo estado na hora. O NutroLab nunca consulta o LN. Erros: 400 `VALIDATION`,
+  404 paciente inexistente (o LN pode ignorar: sem caso no NutroLab, não há o que travar). Auditoria `integ_consent`.
 - `GET /api/integration/analyses/:id` → `IntegrationAnalysis`
 - `GET /api/integration/patients/:code/markers?exams=a,b,c&limit=12` → `IntegrationMarkerSeries[]` (só análises finalizadas;
   sem `exams`, devolve os marcadores com ≥ 2 pontos, até 12 mais frequentes)

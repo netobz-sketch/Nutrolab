@@ -458,7 +458,29 @@ const CreateCaseBody = z.object({
   notes: z.string().trim().max(2000).nullish(),
   // v2.1: id do paciente no LN Evolution, só para o link de volta ao prontuário na tela /casos.
   lnPatientId: z.string().trim().regex(LN_PATIENT_ID, 'lnPatientId: use só letras, números, _ ou - (até 64)').nullish(),
+  // Termo `ia_clinica` do LN (fonte do consentimento para paciente vindo de lá). Sem o campo, nada muda.
+  consentIaClinica: z.enum(['aceito', 'pendente', 'recusado', 'revogado']).nullish(),
+  consentVersion: z.string().trim().max(20).regex(/^[\w.\-]*$/, 'consentVersion: use só letras, números, ponto ou traço').nullish(),
 });
+
+const ConsentBody = z.object({
+  consentIaClinica: z.enum(['aceito', 'pendente', 'recusado', 'revogado']),
+  consentVersion: z.string().trim().max(20).regex(/^[\w.\-]*$/, 'consentVersion: use só letras, números, ponto ou traço').nullish(),
+});
+
+type LnConsent = z.infer<typeof ConsentBody>['consentIaClinica'];
+const LN_CONSENT_STATUS: Record<LnConsent, 'assinado' | 'pendente' | 'recusado' | 'revogado'> = { aceito: 'assinado', pendente: 'pendente', recusado: 'recusado', revogado: 'revogado' };
+
+/**
+ * Grava no paciente o estado do termo `ia_clinica` empurrado pelo LN. É o que abre ou fecha a
+ * trava da IA (src/ai.ts): revogação no LN fecha na hora. O NutroLab não consulta o LN.
+ */
+async function applyLnConsent(request: FastifyRequest, patientId: number, patientCode: string, consent: LnConsent, version: string | null | undefined): Promise<void> {
+  const status = LN_CONSENT_STATUS[consent];
+  const method = `ln:ia_clinica${version ? ` v${version}` : ''}`;
+  await getAsyncDb().prepare("UPDATE patients SET consent_status = ?, consent_at = datetime('now'), consent_method = ?, consent_version = ?, consent_by = NULL WHERE id = ?").run(status, method, version ?? '', patientId);
+  await record(request, 'consent', 'patient', patientId, { patient_code: patientCode, status, method });
+}
 
 const MarkersQuery = z.object({
   exams: z.string().trim().max(2000).optional(),
@@ -593,7 +615,23 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
       .run(num(patient, 'id'), d.patientCode, d.sex ?? null, d.birthDate ?? null, toContextList(d.contexts).join('|'), d.medications ?? '', d.supplements ?? '', d.comorbidities ?? '', d.goal ?? '', notes, d.lnPatientId ?? null);
     const id = Number(info.lastInsertRowid);
     await record(request, 'create_case', 'case', id, { patient_code: d.patientCode });
+    if (d.consentIaClinica) await applyLnConsent(request, num(patient, 'id'), d.patientCode, d.consentIaClinica, d.consentVersion);
     return reply.code(201).send({ data: { id, url: caseUrl(id) } });
+  });
+
+  // Estado do termo ia_clinica do paciente (o LN chama ao aceitar, recusar ou revogar).
+  app.patch('/patients/:code/consent', async (request, reply) => {
+    const code = codeParam(request);
+    if (code === null) return sendError(reply, ERR.notFound, 'Código de paciente inválido.');
+    const parsed = ConsentBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.code(400).send({ error: { code: 'VALIDATION', message: issue ? `${issue.path.join('.') || 'corpo'}: ${issue.message}` : 'Dados inválidos.' } });
+    }
+    const patient = (await getAsyncDb().prepare('SELECT id FROM patients WHERE code = ? AND deleted_at IS NULL').get(code)) as Row | undefined;
+    if (!patient) return sendError(reply, ERR.notFound, 'Paciente não encontrado.');
+    await applyLnConsent(request, num(patient, 'id'), code, parsed.data.consentIaClinica, parsed.data.consentVersion);
+    return { data: { patientCode: code, consentStatus: LN_CONSENT_STATUS[parsed.data.consentIaClinica] } };
   });
 
   app.get('/analyses/:id', async (request, reply) => {

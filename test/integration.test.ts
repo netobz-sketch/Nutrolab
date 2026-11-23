@@ -447,3 +447,38 @@ test('utilitários puros: faixas de status, frases curtas e redação do nome', 
   assert.equal(redactPatientName(null, 'Ana', 'X'), null);
   assert.equal(redactPatientName('**Paciente:** Ana Souza · **Coleta:** 2026-10-15\n- Paciente: Ana Souza (código P-1)\nAna Souza voltou.', 'Ana Souza', 'P-1'), '**Coleta:** 2026-10-15\n- Paciente: código P-1\ncódigo P-1 voltou.');
 });
+
+test('termo ia_clinica do LN: criação com aceito libera a IA; PATCH revogado fecha na hora; validação e token', async () => {
+  // App próprio: o limite por minuto do app principal já foi gasto pelo teste de rate limit.
+  const own = await buildApp();
+  await own.ready();
+  const send = (method: 'POST' | 'PATCH', url: string, body: unknown, headers: Record<string, string> = {}) => own.inject({ method, url, headers: { ...INTERNAL, 'x-integration-token': TOKEN, 'content-type': 'application/json', ...headers }, payload: JSON.stringify(body) });
+  const code = '9a8b7c6d-1111-4222-8333-444455556666';
+  const created = await send('POST', '/api/integration/cases', { patientCode: code, sex: 'F', consentIaClinica: 'aceito', consentVersion: '1.0' });
+  assert.equal(created.statusCode, 201);
+  const newCase = created.json().data.id as number;
+  const consent = async () => (await getAsyncDb().prepare('SELECT consent_status, consent_method, consent_version FROM patients WHERE code = ?').get(code)) as { consent_status: string; consent_method: string; consent_version: string };
+  assert.deepEqual({ ...(await consent()) }, { consent_status: 'assinado', consent_method: 'ln:ia_clinica v1.0', consent_version: '1.0' });
+  const { aiConsentGiven } = await import('../src/ai.js');
+  assert.equal(await aiConsentGiven(newCase), true);
+
+  const patch = (body: unknown, c = code, headers: Record<string, string> = {}) => send('PATCH', `/api/integration/patients/${encodeURIComponent(c)}/consent`, body, headers);
+  const revoked = await patch({ consentIaClinica: 'revogado', consentVersion: '1.0' });
+  assert.equal(revoked.statusCode, 200);
+  assert.deepEqual(revoked.json().data, { patientCode: code, consentStatus: 'revogado' });
+  assert.equal((await consent()).consent_status, 'revogado');
+  assert.equal(await aiConsentGiven(newCase), false, 'revogação fecha a trava');
+
+  assert.equal((await patch({ consentIaClinica: 'talvez' })).statusCode, 400);
+  assert.equal((await patch({})).statusCode, 400);
+  assert.equal((await patch({ consentIaClinica: 'aceito' }, 'paciente-que-nao-existe')).statusCode, 404);
+  assert.equal((await patch({ consentIaClinica: 'aceito' }, code, { 'x-integration-token': 'errado' })).statusCode, 401);
+  assert.equal((await consent()).consent_status, 'revogado', 'recusas não mudam o estado');
+
+  // caso novo sem o campo não mexe no termo já gravado
+  assert.equal((await send('POST', '/api/integration/cases', { patientCode: code })).statusCode, 201);
+  assert.equal((await consent()).consent_status, 'revogado');
+  const audits = (await getAsyncDb().prepare("SELECT COUNT(*) AS n FROM audit_log WHERE action = 'integ_consent'").get()) as { n: number };
+  assert.equal(Number(audits.n), 2);
+  await own.close();
+});

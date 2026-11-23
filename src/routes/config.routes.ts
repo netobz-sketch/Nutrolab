@@ -102,7 +102,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   app.get('/regras/rapido', async (request, reply) => reply.redirect(`/regras${request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : ''}`));
 
   const QuickBody = z.object({ critical_low: numOpt, normal_min: numOpt, target_min: numOpt, target_max: numOpt, normal_max: numOpt, critical_high: numOpt, status: z.enum(['ativo', 'rascunho', 'inativo']), conferir: z.literal('1').optional() });
-  app.post('/regras/:id/rapido', async (request, reply) => {
+  app.post('/regras/:id/rapido', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Regra não encontrada');
@@ -134,7 +134,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
   const formulasView = async (request: FastifyRequest, reply: FastifyReply, error: string | null = null) => page(request, reply, 'Fórmulas', formulasPage((await allFormulas()), aiEnabled(), error, (await loadFormularyFiles())));
   app.get('/formulas', async (request, reply) => formulasView(request, reply));
 
-  app.post('/formulas/arquivos', async (request, reply) => {
+  app.post('/formulas/arquivos', { preHandler: requireAdmin }, async (request, reply) => {
     let saved = 0;
     let rejected = 0;
     for await (const part of request.files({ limits: { fileSize: 25 * 1024 * 1024, files: 10 } })) {
@@ -155,7 +155,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     return reply.redirect(`/formulas?kind=${rejected ? 'warn' : 'ok'}&msg=${encodeURIComponent(`${saved} arquivo(s) anexado(s).${rejected ? ` ${rejected} rejeitado(s): só .docx e .pdf até 25 MB.` : ' Agora clique em "Gerar fórmulas com IA".'}`)}`);
   });
 
-  app.post('/formulas/arquivos/:id/extrair', async (request, reply) => {
+  app.post('/formulas/arquivos/:id/extrair', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM formula_files WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Arquivo não encontrado');
@@ -177,7 +177,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.post('/formulas/arquivos/:id/excluir', async (request, reply) => {
+  app.post('/formulas/arquivos/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM formula_files WHERE id = ?').get(id)) as Row | undefined;
     if (!row) return reply.code(404).send('Arquivo não encontrado');
@@ -192,7 +192,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     if (!row) return reply.code(404).send('Item não encontrado');
     return page(request, reply, 'Item', formulaFormPage(rowToFormula(row), null));
   });
-  app.post('/formulas/rascunho-ia', async (request, reply) => {
+  app.post('/formulas/rascunho-ia', { preHandler: requireAdmin }, async (request, reply) => {
     const body = (request.body ?? {}) as { name?: string; kind?: string; intent?: string };
     const name = (body.name ?? '').trim();
     const kind = ['manipulada', 'medicamento', 'suplemento'].includes(body.kind ?? '') ? (body.kind as string) : 'manipulada';
@@ -220,8 +220,8 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'formula', fid, { before: current ? rowToFormula(current) : null, after: d }, request.id);
     return ok(reply, '/formulas', `${d.name} salvo (${d.status}).`);
   };
-  app.post('/formulas', async (request, reply) => saveFormula(request, reply, null));
-  app.post('/formulas/:id', async (request, reply) => saveFormula(request, reply, Number((request.params as { id: string }).id)));
+  app.post('/formulas', { preHandler: requireAdmin }, async (request, reply) => saveFormula(request, reply, null));
+  app.post('/formulas/:id', { preHandler: requireAdmin }, async (request, reply) => saveFormula(request, reply, Number((request.params as { id: string }).id)));
   app.post('/formulas/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM formulas WHERE id = ?').get(id)) as Row | undefined;
@@ -333,7 +333,7 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     return reply.header('Content-Disposition', 'attachment; filename="valores-otimizados.csv"').type('text/csv; charset=utf-8').send(rulesToCsv((await allRules())));
   });
 
-  app.post('/regras/importar', async (request, reply) => {
+  app.post('/regras/importar', { preHandler: requireAdmin }, async (request, reply) => {
     const file = await request.file({ limits: { fileSize: 2 * 1024 * 1024 } });
     if (!file) return reply.redirect('/regras/lista?kind=err&msg=' + encodeURIComponent('Envie um arquivo CSV.'));
     const text = (await file.toBuffer()).toString('utf8').replace(/^\uFEFF/, '');
@@ -372,8 +372,8 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     return reply.redirect(`/regras/lista?kind=${errors.length ? 'warn' : 'ok'}&msg=${encodeURIComponent(msg)}`);
   });
 
-  app.post('/regras', async (request, reply) => saveRule(request, reply, null));
-  app.post('/regras/:id', async (request, reply) => saveRule(request, reply, Number((request.params as { id: string }).id)));
+  app.post('/regras', { preHandler: requireAdmin }, async (request, reply) => saveRule(request, reply, null));
+  app.post('/regras/:id', { preHandler: requireAdmin }, async (request, reply) => saveRule(request, reply, Number((request.params as { id: string }).id)));
   app.post('/regras/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM rules WHERE id = ?').get(id)) as Row | undefined;
@@ -410,8 +410,8 @@ export async function configRoutes(app: FastifyInstance): Promise<void> {
     await audit(request.user?.id ?? null, id ? 'editar' : 'criar', 'guidance', gid, { before: current ? rowToGuidance(current) : null, after: g }, request.id);
     return ok(reply, '/orientacoes', `Orientação ${g.code} salva (${g.status}).`);
   };
-  app.post('/orientacoes', async (request, reply) => saveGuidance(request, reply, null));
-  app.post('/orientacoes/:id', async (request, reply) => saveGuidance(request, reply, Number((request.params as { id: string }).id)));
+  app.post('/orientacoes', { preHandler: requireAdmin }, async (request, reply) => saveGuidance(request, reply, null));
+  app.post('/orientacoes/:id', { preHandler: requireAdmin }, async (request, reply) => saveGuidance(request, reply, Number((request.params as { id: string }).id)));
   app.post('/orientacoes/:id/excluir', { preHandler: requireAdmin }, async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const row = (await getAsyncDb().prepare('SELECT * FROM guidances WHERE id = ?').get(id)) as Row | undefined;
