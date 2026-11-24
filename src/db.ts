@@ -268,6 +268,8 @@ CREATE TABLE IF NOT EXISTS patients (
   deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cases_patient ON cases(patient_id);
+-- Visão geral por paciente da API de integração (GET /patients/:code/overview).
+CREATE INDEX IF NOT EXISTS idx_cases_patient_code ON cases(patient_code);
 CREATE TABLE IF NOT EXISTS conduct_templates (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL,

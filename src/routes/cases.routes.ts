@@ -173,6 +173,15 @@ function redirectMsg(reply: FastifyReply, to: string, msg: string, kind: 'ok' | 
   return reply.redirect(`${to}?kind=${kind}&msg=${encodeURIComponent(msg)}`);
 }
 
+/**
+ * Caso ou análise inexistente (ou excluído) nas telas de leitura: volta à lista com aviso em vez
+ * de uma página de erro. É onde cai quem chega pelo SSO do sistema integrado com um `return` velho.
+ */
+const CASE_GONE = 'Esse caso ou análise não está disponível (pode ter sido excluído). Abra pela lista.';
+function caseGone(reply: FastifyReply) {
+  return redirectMsg(reply, '/casos', CASE_GONE, 'warn');
+}
+
 async function evaluateCase(c: CaseRow, results: ResultRow[]) {
   const rules = (await allRules());
   const profile = profileOf(c);
@@ -359,7 +368,7 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
   app.get('/casos/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id);
     const c = await loadCase(id);
-    if (!c) return reply.code(404).send('Caso não encontrado');
+    if (!c) return caseGone(reply);
     const results = await loadResults(id);
     const { evals } = (await evaluateCase(c, results));
     const analyses = await loadAnalyses(id);
@@ -584,14 +593,22 @@ export async function casesRoutes(app: FastifyInstance): Promise<void> {
     return redirectMsg(reply, `/casos/${id}/analises/${analysisId}`, `Relatórios gerados. Score ${score.total ?? 'não calculado'}.${warning}`, warning ? 'warn' : 'ok');
   });
 
+  // Atalho só pelo id da análise (o sistema integrado pode mandar `return=/analises/<id>`).
+  app.get('/analises/:aid', async (request, reply) => {
+    const raw = (request.params as { aid: string }).aid;
+    const row = /^\d{1,12}$/.test(raw) ? ((await getAsyncDb().prepare('SELECT a.case_id FROM analyses a JOIN cases c ON c.id = a.case_id WHERE a.id = ? AND c.deleted_at IS NULL').get(Number(raw))) as Row | undefined) : undefined;
+    if (!row) return caseGone(reply);
+    return reply.redirect(`/casos/${num(row, 'case_id')}/analises/${Number(raw)}`);
+  });
+
   app.get('/casos/:id/analises/:aid', async (request, reply) => {
     const { id, aid } = request.params as { id: string; aid: string };
     const c = await loadCase(Number(id));
     const row = c ? await loadAnalysis(Number(id), Number(aid)) : null;
-    if (!c || !row) return reply.code(404).send('Análise não encontrada');
+    if (!c || !row) return caseGone(reply);
     const { evals, profile, derivedEvals } = (await evaluateCase(c, await loadResults(Number(id))));
     const analysis = (await loadAnalyses(Number(id))).find((a) => a.id === Number(aid));
-    if (!analysis) return reply.code(404).send('Análise não encontrada');
+    if (!analysis) return caseGone(reply);
     const q = request.query as { msg?: string; kind?: string };
     const storedScore = scoreFromRow(row);
     const panel = (await brandHeader()) + (storedScore ? patientVisualPanel(storedScore, [...evals, ...derivedEvals], await previousValues(c.patient_id, c.id), hormonalWarnings(caseInfoOf(c, []), evals)) : '');

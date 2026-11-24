@@ -1,9 +1,11 @@
 /**
- * API de integração servidor a servidor para o LN Evolution.
+ * API de integração servidor a servidor (LN Evolution e prontuário do sistema integrado).
  * Contrato: docs/INTEGRACAO-LN-EVOLUTION.md.
  *
- * - Autenticação por `X-Integration-Token` comparado em tempo constante com
- *   `INTEGRATION_TOKEN`. Sem token configurado, todas as rotas respondem 404.
+ * - Autenticação por `X-Integration-Token` comparado em tempo constante com os tokens
+ *   por cliente de `INTEGRATION_TOKENS` (`ln:<token>,app:<token>`); `INTEGRATION_TOKEN`
+ *   continua valendo como o token do cliente `ln`. Sem token configurado, todas as rotas
+ *   respondem 404. Limite por minuto e auditoria são por cliente.
  * - Isenta da checagem de `ALLOWED_HOSTS` (ver hook em app.ts): chega pela rede
  *   interna do Docker com host `nutrolab:8090`. No Caddy público o prefixo é
  *   bloqueado, então o token nunca é aceito pela internet.
@@ -18,7 +20,7 @@ import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { allRules, audit, getAsyncDb, num, numOrNull, str, strOrNull, type Row } from './db.js';
-import { CONTEXTS, evaluateAll, SYSTEMS, type Evaluation, type Rule, type Score } from './engine/index.js';
+import { CONTEXTS, evaluateAll, pointsFor, SYSTEMS, type Evaluation, type Rule, type Score } from './engine/index.js';
 import { appUrl } from './mail.js';
 import { LN_PATIENT_ID } from './ln-link.js';
 import { loadCase, loadResults, printAnalysisHtml, profileOf, storeCaseFile, toInputs } from './routes/cases.routes.js';
@@ -95,10 +97,18 @@ export interface IntegrationReportSummary {
   highlights: { favorable: string[]; attention: string[] };
 }
 
+/**
+ * `normal` = o motor pontuou o resultado como dentro do alvo ótimo (1,0); `alterado` = pontuado
+ * abaixo disso (fora do ótimo, fora do normal ou além de limite crítico); null = sem regra ativa
+ * comparável (não entra no score). Mesma régua do `alteredCount` da visão geral.
+ */
+export type MarkerStatus = 'normal' | 'alterado';
+
 export interface IntegrationMarkerPoint {
   date: string;
   value: number;
   classification: string | null;
+  status: MarkerStatus | null;
   analysisId: number;
   caseId: number;
 }
@@ -109,6 +119,38 @@ export interface IntegrationMarkerSeries {
   unit: string | null;
   system: string;
   points: IntegrationMarkerPoint[];
+}
+
+/** Visão geral do paciente para o bloco "Exames" do prontuário do app: sem valores de marcadores. */
+export interface IntegrationOverviewAnalysis {
+  id: number;
+  /** Data da coleta mais recente do caso (AAAA-MM-DD); sem coleta informada, a data da análise. */
+  examDate: string;
+  status: 'finalizada' | 'minuta';
+  /** Conferido pelo médico = análise finalizada (relatório final aprovado na tela). */
+  reviewed: boolean;
+  /** Itens pontuados pelo motor nesta análise (fotografia do score gravado). */
+  totalCount: number;
+  /** Itens pontuados abaixo do alvo ótimo (ver MarkerStatus). */
+  alteredCount: number;
+  /** Caminho interno, aceito como `return`/`next` do SSO. */
+  url: string;
+}
+
+export interface IntegrationOverviewCase {
+  id: number;
+  status: 'aberto' | 'revisado' | 'arquivado';
+  openedAt: string;
+  url: string;
+  analyses: IntegrationOverviewAnalysis[];
+}
+
+export interface IntegrationPatientOverview {
+  patientCode: string;
+  /** null = paciente ainda não existe no NutroLab (nenhum caso criado). */
+  consentStatus: 'pendente' | 'assinado' | 'recusado' | 'revogado' | null;
+  cases: IntegrationOverviewCase[];
+  lastAnalysisId: number | null;
 }
 
 /* ------------------------------------------------------------ utilidades */
@@ -137,7 +179,27 @@ function caseUrl(caseId: number): string {
   return `${appUrl()}/casos/${caseId}`;
 }
 function analysisUrl(caseId: number, analysisId: number): string {
-  return `${appUrl()}/casos/${caseId}/analises/${analysisId}`;
+  return `${appUrl()}${analysisPath(caseId, analysisId)}`;
+}
+/** Caminhos internos (sem host): o app os repassa como `return` do broker SSO. */
+function casePath(caseId: number): string {
+  return `/casos/${caseId}`;
+}
+function analysisPath(caseId: number, analysisId: number): string {
+  return `/casos/${caseId}/analises/${analysisId}`;
+}
+
+/** Ver MarkerStatus: usa a pontuação do próprio motor, sem régua nova. */
+export function markerStatusOf(ev: Evaluation): MarkerStatus | null {
+  const item = pointsFor(ev);
+  if (!item) return null;
+  return item.points >= 1 ? 'normal' : 'alterado';
+}
+
+/** Contagem sobre a fotografia do score gravado na análise (itens pontuados e os abaixo do ótimo). */
+export function scoreCounts(score: Score | null): { totalCount: number; alteredCount: number } {
+  const items = score?.items ?? [];
+  return { totalCount: items.length, alteredCount: items.filter((i) => typeof i.points === 'number' && i.points < 1).length };
 }
 
 /** `datetime('now')` do SQLite vem como "AAAA-MM-DD HH:MM:SS" em UTC; devolve ISO. */
@@ -431,7 +493,7 @@ async function markerSeries(patientCode: string, exams: Set<string> | null, limi
         if (exams && !exams.has(marker.exam)) continue;
         const date = marker.collectionDate ?? a.createdAt.slice(0, 10);
         const entry = acc.get(marker.exam) ?? { exam: marker.exam, label: marker.label, unit: marker.unit, system: marker.system, byDate: new Map() };
-        entry.byDate.set(date, { date, value: marker.value, classification: marker.classification, analysisId: a.id, caseId: c.id });
+        entry.byDate.set(date, { date, value: marker.value, classification: marker.classification, status: markerStatusOf(ev), analysisId: a.id, caseId: c.id });
         entry.unit = marker.unit ?? entry.unit;
         acc.set(marker.exam, entry);
       }
@@ -442,6 +504,43 @@ async function markerSeries(patientCode: string, exams: Set<string> | null, limi
     .filter((s) => exams !== null || s.points.length >= 2)
     .sort((x, y) => y.points.length - x.points.length || x.label.localeCompare(y.label, 'pt-BR'));
   return series.slice(0, limit);
+}
+
+const CONSENT_STATUSES = ['pendente', 'assinado', 'recusado', 'revogado'] as const;
+type ConsentStatus = (typeof CONSENT_STATUSES)[number];
+function consentStatusOf(raw: string | null): ConsentStatus | null {
+  return raw !== null && (CONSENT_STATUSES as readonly string[]).includes(raw) ? (raw as ConsentStatus) : null;
+}
+
+/**
+ * Um GET só para o bloco de exames do app: casos não excluídos (mais recentes primeiro), cada um
+ * com as análises e as contagens do score gravado. Nenhum valor de marcador, nenhum markdown.
+ */
+async function patientOverview(patientCode: string): Promise<IntegrationPatientOverview> {
+  const adb = getAsyncDb();
+  const patient = (await adb.prepare('SELECT consent_status FROM patients WHERE code = ? AND deleted_at IS NULL').get(patientCode)) as Row | undefined;
+  const caseRows = (await adb
+    .prepare(
+      `SELECT c.id, c.status, c.created_at,
+         (SELECT MAX(r.collection_date) FROM results r WHERE r.case_id = c.id AND r.excluded = 0) AS exam_date
+       FROM cases c WHERE c.patient_code = ? AND c.deleted_at IS NULL ORDER BY c.created_at DESC, c.id DESC`,
+    )
+    .all(patientCode)) as Row[];
+  const cases: IntegrationOverviewCase[] = [];
+  let last: AnalysisRecord | null = null;
+  for (const row of caseRows) {
+    const caseId = num(row, 'id');
+    const examDate = strOrNull(row, 'exam_date');
+    const analyses: IntegrationOverviewAnalysis[] = [];
+    for (const a of await analysesOfCase(caseId)) {
+      if (last === null || a.createdAt > last.createdAt || (a.createdAt === last.createdAt && a.id > last.id)) last = a;
+      const finalized = a.finalizedAt !== null;
+      analyses.push({ id: a.id, examDate: examDate ?? a.createdAt.slice(0, 10), status: finalized ? 'finalizada' : 'minuta', reviewed: finalized, ...scoreCounts(parseScore(a.scoreJson)), url: analysisPath(caseId, a.id) });
+    }
+    const createdAt = str(row, 'created_at');
+    cases.push({ id: caseId, status: caseStatus(str(row, 'status')), openedAt: isoTimestamp(createdAt) ?? createdAt, url: casePath(caseId), analyses });
+  }
+  return { patientCode, consentStatus: patient ? consentStatusOf(strOrNull(patient, 'consent_status')) : null, cases, lastAnalysisId: last?.id ?? null };
 }
 
 /* ---------------------------------------------------------------- rotas */
@@ -510,8 +609,11 @@ function codeParam(request: FastifyRequest): string | null {
   return code && code.length <= 40 && /^[\w.\-/ ]*$/u.test(code) ? code : null;
 }
 
-async function record(request: FastifyRequest, action: string, entity: string, entityId: string | number | null, details: unknown): Promise<void> {
-  await audit(null, `integ_${action}`, entity, entityId, details, request.id);
+/** Cliente autenticado de cada requisição (preenchido no onRequest; nunca o token). */
+const requestClient = new WeakMap<FastifyRequest, string>();
+
+async function record(request: FastifyRequest, action: string, entity: string, entityId: string | number | null, details: Record<string, unknown> | null): Promise<void> {
+  await audit(null, `integ_${action}`, entity, entityId, { client: requestClient.get(request) ?? null, ...(details ?? {}) }, request.id);
 }
 
 function toContextList(value: string[] | string | null | undefined): string[] {
@@ -520,13 +622,58 @@ function toContextList(value: string[] | string | null | undefined): string[] {
 }
 
 export interface IntegrationOptions {
-  /** Token aceito; vazio/indefinido desliga a integração (404 em todas as rotas). */
-  token?: string | undefined;
-  /** Requisições por minuto por token. */
+  /** Tokens por cliente (substitui o ambiente); nenhum token desliga a integração (404 em todas as rotas). */
+  tokens?: Record<string, string> | undefined;
+  /** Requisições por minuto por cliente. */
   limitPerMinute?: number;
 }
 
-/** Janela fixa de 60 s em memória, por token (a chave é o hash, nunca o token). */
+export interface IntegrationClient { name: string; token: string }
+
+const CLIENT_NAME = /^[a-z][a-z0-9_-]{0,19}$/;
+
+/**
+ * Clientes da integração a partir do ambiente: `INTEGRATION_TOKENS=ln:<token>,app:<token>` e,
+ * por retrocompatibilidade, `INTEGRATION_TOKEN` como o token do cliente `ln` (quando
+ * `INTEGRATION_TOKENS` não traz `ln`). Entrada sem token (`app:` com a variável do compose
+ * vazia) é ignorada; entrada malformada vai para `ignored` (só o nome/posição, nunca o valor).
+ */
+export function parseIntegrationTokens(env: Record<string, string | undefined> = process.env): { clients: IntegrationClient[]; ignored: string[] } {
+  const clients: IntegrationClient[] = [];
+  const ignored: string[] = [];
+  const raw = env.INTEGRATION_TOKENS?.trim() ?? '';
+  raw.split(',').forEach((entry, index) => {
+    const item = entry.trim();
+    if (!item) return;
+    const sep = item.indexOf(':');
+    const name = sep > 0 ? item.slice(0, sep).trim().toLowerCase() : '';
+    const token = sep > 0 ? item.slice(sep + 1).trim() : '';
+    if (!CLIENT_NAME.test(name)) {
+      ignored.push(`posição ${index + 1}`);
+      return;
+    }
+    if (!token) return;
+    if (clients.some((c) => c.name === name)) {
+      ignored.push(`${name} (repetido)`);
+      return;
+    }
+    clients.push({ name, token });
+  });
+  const legacy = env.INTEGRATION_TOKEN?.trim() ?? '';
+  if (legacy && !clients.some((c) => c.name === 'ln')) clients.push({ name: 'ln', token: legacy });
+  return { clients, ignored };
+}
+
+/** Cliente dono do token apresentado; compara com todos (tempo constante por token, sem saída antecipada). */
+export function clientForToken(presented: string | undefined, clients: IntegrationClient[]): string | null {
+  let found: string | null = null;
+  for (const c of clients) {
+    if (tokenMatches(presented, c.token) && found === null) found = c.name;
+  }
+  return found;
+}
+
+/** Janela fixa de 60 s em memória, por cliente (a chave é o nome do cliente, nunca o token). */
 class RateLimiter {
   private readonly hits = new Map<string, { count: number; resetAt: number }>();
   constructor(private readonly max: number) {}
@@ -542,21 +689,26 @@ class RateLimiter {
 }
 
 export async function integrationRoutes(app: FastifyInstance, opts: IntegrationOptions = {}): Promise<void> {
-  const token = (opts.token ?? process.env.INTEGRATION_TOKEN ?? '').trim();
+  const parsedTokens = opts.tokens
+    ? { clients: Object.entries(opts.tokens).map(([name, token]) => ({ name, token: token.trim() })).filter((c) => c.token.length > 0), ignored: [] }
+    : parseIntegrationTokens();
+  const clients = parsedTokens.clients;
+  if (parsedTokens.ignored.length) app.log.warn({ ignored: parsedTokens.ignored }, 'integração: entradas de INTEGRATION_TOKENS ignoradas (use nome:token)');
   const limitPerMinute = opts.limitPerMinute ?? Number(process.env.INTEGRATION_RATE_LIMIT ?? 120);
-  const enabled = token.length > 0;
+  const enabled = clients.length > 0;
   const limiter = new RateLimiter(Number.isFinite(limitPerMinute) && limitPerMinute > 0 ? limitPerMinute : 120);
-  const tokenKey = enabled ? sha256(token).toString('hex') : '';
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
     if (!enabled) return sendError(reply, ERR.notFound);
     const presented = request.headers['x-integration-token'];
-    if (typeof presented !== 'string' || !tokenMatches(presented, token)) {
+    const client = typeof presented === 'string' ? clientForToken(presented, clients) : null;
+    if (client === null) {
       request.log.warn({ ip: request.ip }, 'integração: token inválido');
       return sendError(reply, ERR.unauthorized);
     }
-    if (!limiter.allow(tokenKey)) return sendError(reply, ERR.tooMany);
+    requestClient.set(request, client);
+    if (!limiter.allow(client)) return sendError(reply, ERR.tooMany);
   });
 
   app.setNotFoundHandler(async (_request, reply) => sendError(reply, ERR.notFound));
@@ -584,6 +736,14 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     return { data: cases };
   });
 
+  app.get('/patients/:code/overview', async (request, reply) => {
+    const code = codeParam(request);
+    if (code === null) return sendError(reply, ERR.notFound, 'Código de paciente inválido.');
+    const overview = await patientOverview(code);
+    await record(request, 'patient_overview', 'patient', code, { patient_code: code, cases: overview.cases.length });
+    return { data: overview };
+  });
+
   app.get('/cases/:id', async (request, reply) => {
     const id = idParam(request, 'id');
     const c = id === null ? null : await loadCase(id);
@@ -601,7 +761,7 @@ export async function integrationRoutes(app: FastifyInstance, opts: IntegrationO
     }
     const d = parsed.data;
     const today = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const prefix = `Criado pelo LN Evolution em ${today}.`;
+    const prefix = requestClient.get(request) === 'app' ? `Criado pelo prontuário do LN Medicina Integrada em ${today}.` : `Criado pelo LN Evolution em ${today}.`;
     const notes = d.notes ? `${prefix}\n${d.notes}` : prefix;
     // Paciente canônico: o `code` é o uuid do clinica-api; cria o cadastro pseudônimo se ainda não existir.
     const adb = getAsyncDb();

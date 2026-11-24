@@ -84,7 +84,8 @@ npm test                                 # motor, HTTP, SSO e integração (59 t
 
 API servidor a servidor em `/api/integration/*` (contrato em `docs/INTEGRACAO-LN-EVOLUTION.md`):
 casos por paciente, análise com score por sistema, marcadores e destaques, séries de marcadores
-e criação de caso já preenchido. Exige o header `X-Integration-Token` igual a `INTEGRATION_TOKEN`
+e criação de caso já preenchido, e a visão geral do paciente para o prontuário do app. Exige o header `X-Integration-Token`
+igual a um dos tokens de `INTEGRATION_TOKENS` (`ln:…,app:…`; `INTEGRATION_TOKEN` vale como o do `ln`), com limite por cliente
 (comparação em tempo constante, 120 req/min); sem a variável, as rotas respondem 404. O prefixo é
 isento de `ALLOWED_HOSTS` porque chega pela rede interna do Docker (`http://nutrolab:8090`), e o
 Caddy público bloqueia `/api/integration/*` para o token nunca ser aceito pela internet. Cada

@@ -30,8 +30,12 @@ paciente. Se o LN enviar outro identificador (código de laboratório, id intern
 `markers.classification` é recalculada com as regras ATIVAS do NutroLab no momento da consulta (o score por sistema é o congelado).
 
 ## Autenticação
-- Header `X-Integration-Token: <token>`; token em `INTEGRATION_TOKEN` (env). Comparação em tempo constante.
-- Sem `INTEGRATION_TOKEN` configurado, as rotas respondem 404 (integração desligada).
+- Header `X-Integration-Token: <token>`. **v2.3** Um token por cliente: `INTEGRATION_TOKENS=ln:<token>,app:<token>`
+  (`ln` = LN Evolution, `app` = prontuário do sistema integrado; nome em minúsculas, até 20). `INTEGRATION_TOKEN` continua
+  valendo como o token do `ln` quando `INTEGRATION_TOKENS` não traz `ln` (retrocompatível). Entrada com token vazio
+  (`app:` com a variável do compose vazia) é ignorada. Comparação em tempo constante contra todos os tokens.
+- Sem nenhum token configurado, as rotas respondem 404 (integração desligada).
+- Limite por minuto e auditoria são **por cliente**: `audit_log.details.client` = `ln` | `app`.
 - Rotas sob `/api/integration/*` ficam **isentas** da checagem de `ALLOWED_HOSTS` (chegam com host `nutrolab:8090`),
   mas exigem o token. No Caddy público, `/api/integration/*` é bloqueado (404), para o token nunca ser aceito
   pela internet. Cada chamada vai para `audit_log` com `user_id` null e `action` prefixada `integ_`.
@@ -39,14 +43,15 @@ paciente. Se o LN enviar outro identificador (código de laboratório, id intern
 ## Envelope
 Sucesso: `{ data }`. Erro: `{ error: { code, message } }` com 400/401/404/429/500.
 Id numérico de rota inválido (`/cases/abc`, `/analyses/0`) → 404 `NOT_FOUND`, depois da checagem do token. JSON, UTF-8. Datas `AAAA-MM-DD`;
-timestamps ISO. Limite: 120 req/min por token.
+timestamps ISO. Limite: 120 req/min por cliente (`INTEGRATION_RATE_LIMIT`).
 
 ## Rotas
 - `GET /api/integration/health` → `{ ok: true, app: 'nutrolab', version }`
 - `GET /api/integration/patients/:code/cases` → `IntegrationCase[]` (desc por `updatedAt`; só não apagados)
 - `GET /api/integration/cases/:id` → `IntegrationCase & { analyses: IntegrationAnalysisSummary[] }`
 - `POST /api/integration/cases` `{ patientCode, sex?: 'M'|'F', birthDate?, goal?, contexts?, comorbidities?, medications?, supplements?, notes?, lnPatientId? }`
-  → `{ id, url }` (caso `aberto`, `created_by` null, `origin = 'ln'`; `notes` recebe o prefixo "Criado pelo LN Evolution em <data>").
+  → `{ id, url }` (caso `aberto`, `created_by` null, `origin = 'ln'`; `notes` recebe o prefixo "Criado pelo LN Evolution em <data>",
+  ou "Criado pelo prontuário do LN Medicina Integrada em <data>" para o cliente `app`).
   **v2.1** `lnPatientId` (opcional): id do paciente **no LN Evolution** (letras, números, `_` e `-`, até 64), usado só para o
   link "prontuário" na tela /casos do NutroLab (`${LN_EVOLUTION_PUBLIC_URL}/pacientes/<lnPatientId>`; sem a variável ou sem o id,
   o link não aparece). Formato inválido → 400 `VALIDATION`. Casos criados antes da v2.1 ficam com origem LN, mas sem link.
@@ -60,7 +65,19 @@ timestamps ISO. Limite: 120 req/min por token.
   404 paciente inexistente (o LN pode ignorar: sem caso no NutroLab, não há o que travar). Auditoria `integ_consent`.
 - `GET /api/integration/analyses/:id` → `IntegrationAnalysis`
 - `GET /api/integration/patients/:code/markers?exams=a,b,c&limit=12` → `IntegrationMarkerSeries[]` (só análises finalizadas;
-  sem `exams`, devolve os marcadores com ≥ 2 pontos, até 12 mais frequentes)
+  sem `exams`, devolve os marcadores com ≥ 2 pontos, até 12 mais frequentes). Forma:
+  `{ exam, label, unit, system, points: [{ date, value, classification, status: 'normal'|'alterado'|null, analysisId, caseId }] }`.
+  **v2.3** `status`: `normal` = o motor pontuou dentro do alvo ótimo; `alterado` = pontuou abaixo disso (fora do ótimo, fora do
+  normal ou além do crítico); `null` = sem regra ativa comparável. Só exibição: o app não reclassifica.
+- **v2.3** `GET /api/integration/patients/:code/overview` → `IntegrationPatientOverview`, um GET só para o bloco "Exames" do
+  prontuário do app, sem nenhum valor de marcador:
+  `{ patientCode, consentStatus: 'pendente'|'assinado'|'recusado'|'revogado'|null, lastAnalysisId: number|null,
+  cases: [{ id, status, openedAt, url, analyses: [{ id, examDate, status: 'finalizada'|'minuta', reviewed, totalCount,
+  alteredCount, url }] }] }`. Casos não excluídos, mais recentes primeiro; análises da mais nova para a mais antiga.
+  `examDate` = coleta mais recente do caso (sem coleta, a data da análise). `reviewed` = análise finalizada pelo médico.
+  `totalCount`/`alteredCount` vêm da **fotografia do score gravado na análise** (itens pontuados / pontuados abaixo do ótimo).
+  `url` é **caminho interno** (`/casos/<id>`, `/casos/<id>/analises/<id>`), para o `return` do SSO. Paciente que ainda não
+  existe no NutroLab → 200 com `consentStatus: null` e `cases: []`. Auditoria `integ_patient_overview`.
 - **v2.1** `GET /api/integration/patients/:code/summary-for-report` → `IntegrationReportSummary | null`.
   A análise **finalizada** mais recente do paciente (rascunhos nunca entram), entre os casos não excluídos. Só score, status,
   datas e destaques; nada de Markdown, marcadores ou conduta. Os destaques saem com o nome redigido (o do caso e o do cadastro).

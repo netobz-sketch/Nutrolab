@@ -295,6 +295,37 @@ test('sso handoff: token expirado pede um novo ao broker uma vez; com retry=1 va
   });
 });
 
+test('sso handoff: return para caso e análise (inclusive /analises/<id>) entra direto; inexistente cai em /casos com aviso', async () => {
+  await withApp(async () => {
+    const adb = getAsyncDb();
+    const caseId = Number((await adb.prepare("INSERT INTO cases(patient_code, status, origin) VALUES ('sso-next-1', 'aberto', 'ln')").run()).lastInsertRowid);
+    const analysisId = Number((await adb.prepare("INSERT INTO analyses(case_id, markdown, markdown_patient, markdown_technical, table_version, ai_used) VALUES (?, '# Técnico', '# Paciente', '# Técnico', 'v1', 0)").run(caseId)).lastInsertRowid);
+    const enter = async (target: string) => {
+      const r = await handoff({ access_token: handoffToken(), return: target });
+      assert.equal(r.statusCode, 200, target);
+      assert.ok(r.body.includes(`content="0;url=${target}"`), `next aceito sem troca: ${target}`);
+      const cookie = String(r.headers['set-cookie']).split(';')[0] ?? '';
+      return app.inject({ method: 'GET', url: target, headers: { ...H, cookie } });
+    };
+    assert.equal((await enter(`/casos/${caseId}`)).statusCode, 200);
+    assert.equal((await enter(`/casos/${caseId}/analises/${analysisId}`)).statusCode, 200);
+    const alias = await enter(`/analises/${analysisId}`);
+    assert.equal(alias.statusCode, 302);
+    assert.equal(alias.headers.location, `/casos/${caseId}/analises/${analysisId}`);
+    for (const gone of ['/casos/999999', `/casos/${caseId}/analises/999999`, '/analises/999999']) {
+      const r = await enter(gone);
+      assert.equal(r.statusCode, 302, gone);
+      assert.match(String(r.headers.location), /^\/casos\?kind=warn&msg=/, gone);
+    }
+    // Caso excluído: nem o atalho nem a rota completa o abrem.
+    await adb.prepare("UPDATE cases SET deleted_at = datetime('now') WHERE id = ?").run(caseId);
+    assert.match(String((await enter(`/analises/${analysisId}`)).headers.location), /^\/casos\?kind=warn/);
+    // Destino externo continua trocado por /casos.
+    const ext = await handoff({ access_token: handoffToken(), return: '//malicioso.test/x' });
+    assert.match(ext.body, /content="0;url=\/casos"/);
+  });
+});
+
 test('sso handoff: Origin errado ou ausente → 403; papel sem acesso → 403 sem sessão; sem a env → 404', async () => {
   await withApp(async () => {
     assert.equal((await handoff({ access_token: handoffToken() }, 'https://malicioso.test')).statusCode, 403);

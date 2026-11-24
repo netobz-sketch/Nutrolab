@@ -261,8 +261,8 @@ test('GET /patients/:code/markers: séries cronológicas só de análises finali
   assert.equal(vitD?.unit, 'ng/mL');
   assert.equal(vitD?.system, 'vitaminas');
   assert.deepEqual(vitD?.points, [
-    { date: '2026-04-02', value: 18, classification: 'abaixo_do_alvo', analysisId: finalized2, caseId: case2 },
-    { date: '2026-10-15', value: 35, classification: 'abaixo_do_alvo', analysisId, caseId },
+    { date: '2026-04-02', value: 18, classification: 'abaixo_do_alvo', status: 'alterado', analysisId: finalized2, caseId: case2 },
+    { date: '2026-10-15', value: 35, classification: 'abaixo_do_alvo', status: 'alterado', analysisId, caseId },
   ]);
   const gli = series.find((s) => s.exam === 'glicose_jejum');
   assert.equal(gli?.points[0]?.classification, 'acima_do_alvo');
