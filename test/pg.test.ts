@@ -80,3 +80,14 @@ test('pg: consultas emitidas sem esperar rodam na ordem de emissão, e erro não
   await db.exec('DROP TABLE async_probe');
   await db.close();
 });
+
+// Regressão de 2026-11-24: o sqlite_master descarta o IF NOT EXISTS, e o gerador só repunha em
+// CREATE INDEX; o CREATE UNIQUE INDEX do SSO derrubava o segundo boot do processo (42P07).
+test('pgSchemaStatements: todo índice (inclusive UNIQUE) nasce com IF NOT EXISTS', async () => {
+  const { pgSchemaStatements } = await import('../src/pg/schema.js');
+  const { schemaReference } = await import('../src/db.js');
+  const indexes = pgSchemaStatements(schemaReference()).filter((s) => /INDEX/i.test(s));
+  assert.ok(indexes.length > 0);
+  for (const s of indexes) assert.match(s, /^CREATE (UNIQUE )?INDEX IF NOT EXISTS /, s);
+  assert.ok(indexes.some((s) => s.startsWith('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_gotrue_sub')), 'índice único do SSO preservado como UNIQUE');
+});

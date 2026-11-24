@@ -26,6 +26,8 @@ function translateCreateTable(sql: string): string {
 }
 
 /** Lista ordenada (FKs primeiro) de comandos CREATE para o Postgres. */
+// O sqlite_master guarda o CREATE sem o IF NOT EXISTS; aqui ele volta, inclusive em CREATE UNIQUE INDEX
+// (sem isso o segundo boot do processo caía com 42P07 "idx_users_gotrue_sub already exists", 2026-11-24).
 export function pgSchemaStatements(mem: DatabaseSync): string[] {
   const tables = (mem.prepare("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Row[]).map((r) => {
     const sql = String(r.sql);
@@ -40,7 +42,7 @@ export function pgSchemaStatements(mem: DatabaseSync): string[] {
     ordered.push(next);
     done.add(next.name);
   }
-  const indexes = (mem.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").all() as Row[]).map((r) => String(r.sql).replace(/^CREATE INDEX\s+(IF NOT EXISTS\s+)?/i, 'CREATE INDEX IF NOT EXISTS '));
+  const indexes = (mem.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL").all() as Row[]).map((r) => String(r.sql).replace(/^CREATE\s+(UNIQUE\s+)?INDEX\s+(IF NOT EXISTS\s+)?/i, (_m, unique: string | undefined) => `CREATE ${unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS `));
   return [...ordered.map((t) => translateCreateTable(t.sql)), ...indexes];
 }
 
