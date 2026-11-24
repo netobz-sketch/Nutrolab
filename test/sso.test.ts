@@ -284,7 +284,9 @@ test('sso handoff: token expirado pede um novo ao broker uma vez; com retry=1 va
     const expired = jwt(claims({ email: 'handoff@ln.local', exp: now() - 60 }));
     const first = await handoff({ access_token: expired, return: '/casos' });
     assert.equal(first.statusCode, 302);
-    assert.equal(first.headers.location, `${APP}/sso/exames?retry=1`);
+    assert.equal(first.headers.location, `${APP}/sso/exames?retry=1&return=%2Fcasos`);
+    const deep = await handoff({ access_token: expired, return: '/casos/7/analises/9' });
+    assert.equal(deep.headers.location, `${APP}/sso/exames?retry=1&return=%2Fcasos%2F7%2Fanalises%2F9`, 'o retry preserva o destino');
     assert.equal(first.headers['set-cookie'], undefined);
     const second = await handoff({ access_token: expired, return: '/casos', retry: '1' });
     assert.equal(second.statusCode, 302);

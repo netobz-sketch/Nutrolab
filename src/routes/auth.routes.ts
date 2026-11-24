@@ -161,7 +161,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
       // Token vencido ou inválido: pede um novo ao broker UMA vez (ele reposta com retry=1);
       // na segunda falha, login normal.
-      if (body.retry !== '1') return reply.redirect(`${broker}/sso/exames?retry=1`);
+      // O `return` vai junto: quem clicou em "Abrir análise" cai na análise, não na lista.
+      if (body.retry !== '1') return reply.redirect(`${broker}/sso/exames?retry=1&return=${encodeURIComponent(target)}`);
       return reply.redirect('/login?sso=falhou&next=' + encodeURIComponent(target));
     }
     loginSucceeded(request.ip);
